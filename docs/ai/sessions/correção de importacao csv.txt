@@ -1,0 +1,196 @@
+
+> Executei um teste e vi que CSV de 0 bytes sobe, e a mensagem do log diz "has
+  a header" sem haver cabeçalho. Vamos corrigir esse caso.
+
+● Vou olhar o código de importação do CSV.
+
+  Searched for 3 patterns, read 5 files, ran 2 shell commands (ctrl+o to expand)
+
+● Update(src\importer\csv-reader.ts)
+  ⎿  Added 3 lines, removed 1 line
+      34  /**
+      35   * Streams the CSV (semicolon-delimited, RFC 4180 quoting) as n
+          ormalized rows. Header names are
+      36   * matched ignoring case and surrounding spaces, extra columns 
+          are ignored, and blank lines are
+      37 - * skipped. A missing required column rejects the iteration wit
+         -h a CsvImportError.                                            
+      37 + * skipped. A missing required column, or a file with no header
+         + at all (empty or only blank                                   
+      38 + * lines), rejects the iteration with a CsvImportError.        
+      39   */
+      40  export async function* readCsv(csvPath: string): AsyncGenerator
+          <CsvRow> {
+      41 +  let headerSeen = false;                                      
+      42    const parser = parse({
+      43      delimiter: ';',
+      44      bom: true,
+
+● Update(src\importer\csv-reader.ts)
+  ⎿  Added 1 line
+      47      relax_column_count: true,
+      48      info: true,
+      49      columns: (header: string[]) => {
+      50 +      headerSeen = true;                                       
+      51        const columns = header.map((name) => name.trim().toLowerC
+          ase());
+      52        const missing = REQUIRED_COLUMNS.filter((name) => !column
+          s.includes(name));
+      53        if (missing.length > 0) {
+
+● Update(src\importer\csv-reader.ts)
+  ⎿  Added 7 lines
+      74          winner: r.winner ?? '',
+      75        };
+      76      }
+      77 +    // The parser never calls `columns` when there is no record
+         + at all, so an empty file would                                
+      78 +    // otherwise look like a valid CSV without rows.           
+      79 +    if (!headerSeen) {                                         
+      80 +      throw new CsvImportError(                                
+      81 +        `CSV file has no header (expected: ${REQUIRED_COLUMNS.j
+         +oin(';')}): ${csvPath}`,                                       
+      82 +      );                                                       
+      83 +    }                                                          
+      84    } catch (err) {
+      85      throw toError(err, csvPath);
+      86    }
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Estou adicionando o teste de integração para o arquivo vazio e rodando.
+
+● Update(test\integration\csv-import.test.ts)
+  ⎿  Added 8 lines
+      143      assert.match(warnings[0]!.msg, /no data rows/);
+      144    });
+      145  
+      146 +  it('buildApp rejects a file without a header (0 bytes or onl
+          +y blank lines)', async () => {                                
+      147 +    await assert.rejects(buildApp({ csvPath: fixture('empty.cs
+          +v') }), /CSV file has no header/);                            
+      148 +    await assert.rejects(                                     
+      149 +      buildApp({ csvPath: fixture('blank-lines.csv') }),      
+      150 +      /CSV file has no header|missing required column/,       
+      151 +    );                                                        
+      152 +  });                                                         
+      153 +                                                              
+      154    it('buildApp rejects when a required column is missing', asy
+           nc () => {
+      155      await assert.rejects(
+      156        buildApp({ csvPath: fixture('missing-column.csv') }),
+
+  Ran 4 shell commands (ctrl+o to expand)
+
+● Os dois dão a mesma mensagem, então deixo a asserção do teste exata. Em
+  seguida atualizo README, DECISIONS e PROMPTS.
+
+● Update(test\integration\csv-import.test.ts)
+  ⎿  Added 1 line, removed 1 line
+      147      await assert.rejects(buildApp({ csvPath: fixture('empty.cs
+           v') }), /CSV file has no header/);
+      148      await assert.rejects(
+      149        buildApp({ csvPath: fixture('blank-lines.csv') }),
+      150 -      /CSV file has no header|missing required column/,       
+      150 +      /CSV file has no header/,                               
+      151      );
+      152    });
+      153  
+
+● Update(README.md)
+  ⎿  Added 2 lines, removed 2 lines
+      303      dados que foram importados. Acompanhe os logs ao trocar o 
+           CSV.
+      304  - **CSV só com cabeçalho:** a aplicação sobe normalmente, com 
+           um `warn`, e a API responde com
+      305    resultados vazios (`{ "min": [], "max": [] }` e `data: []`).
+      306 -- **O que impede a aplicação de subir:** arquivo inexistente, 
+          -coluna obrigatória faltando ou CSV                            
+      307 -  malformado (por exemplo, aspas abertas e nunca fechadas). Ne
+          -sses casos tudo é revertido e o                               
+      306 +- **O que impede a aplicação de subir:** arquivo inexistente, 
+          +arquivo sem cabeçalho (0 bytes ou só                          
+      307 +  linhas em branco), coluna obrigatória faltando ou CSV malfor
+          +mado (por exemplo, aspas abertas e nunca fechadas). Nesses cas
+          +os tudo é revertido e o                                       
+      308    processo encerra com código 1. O CSV malformado não é tratad
+           o como "linha ruim" porque uma aspa
+      309    mal fechada pode engolir as linhas seguintes, e seguir adian
+           te comprometeria a precisão do
+      310    resultado.
+
+● Update(docs\ai\DECISIONS.md)
+  ⎿  Added 17 lines
+      140  - **Alternativas:** falhar o startup com CSV vazio.
+      141  - **Motivo:** um CSV sem filmes é uma entrada válida; o contra
+           to de `min`/`max` já prevê arrays
+      142    vazios.
+      143 +- **Ajuste (D33):** isto vale só para arquivo *com cabeçalho*.
+          + Arquivo sem cabeçalho (0 bytes ou só                         
+      144 +  linhas em branco) passou a falhar o startup.                
+      145  
+      146 +## D33 — CSV sem cabeçalho (0 bytes) falha o startup          
+      147 +                                                              
+      148 +- **Achado:** um CSV de 0 bytes subia com o aviso "CSV has a h
+          +eader but no data rows", que é falso:                         
+      149 +  o `csv-parse` só chama o callback de `columns` quando há ao 
+          +menos um registro, então a validação                          
+      150 +  das colunas obrigatórias nunca rodava e o arquivo parecia um
+          + CSV válido sem linhas.                                       
+      151 +- **Escolha:** `readCsv` marca quando o cabeçalho foi lido e, 
+          +se o arquivo terminar sem ele, lança                          
+      152 +  `CsvImportError` ("CSV file has no header (expected: ...)").
+          + Cobre arquivo vazio e arquivo só com                         
+      153 +  linhas em branco. É o mesmo tratamento de "coluna obrigatóri
+          +a faltando" (D18 só vale com                                  
+      154 +  cabeçalho).                                                 
+      155 +- **Alternativas:** manter o startup com `warn` e corrigir só 
+          +o texto da mensagem. Descartado: sem                          
+      156 +  cabeçalho não dá para saber se o arquivo é o CSV certo (uplo
+          +ad truncado, arquivo errado), e subir                         
+      157 +  a API com resultados vazios esconderia o erro, que é o que m
+          +ais afeta a precisão dos intervalos.                          
+      158 +- **Testes:** `buildApp` rejeita `empty.csv` (0 bytes) e `blan
+          +k-lines.csv`. Sem a correção, falha.                          
+      159 +  Total: 69 testes.                                           
+      160 +                                                              
+      161  ## D19 — Intervalos calculados em SQL com `LAG`, uma vez após 
+           a carga
+      162  
+      163  - **Escolha:** CTE `wins` (só `winner = 1`) → `pairs` (`LAG(ye
+           ar) OVER (PARTITION BY producer_id
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● Um CSV de 0 bytes, ou só com linhas em branco, agora faz o startup falhar. A
+  mensagem é CSV file has no header (expected:
+  year;title;studios;producers;winner): <caminho>. Typecheck, lint, prettier e
+  os 69 testes passam. Sem a correção, o teste novo falha.
+
+  Causa: o csv-parse só chama o callback columns quando há ao menos um registro.
+  Com arquivo vazio, a checagem das colunas obrigatórias nunca rodava, e o
+  arquivo parecia um CSV válido sem linhas.
+
+  Correção: csv-reader.ts (src/importer/csv-reader.ts) marca quando o cabeçalho
+  foi lido. Se o arquivo termina sem ele, readCsv lança CsvImportError, como já
+  acontece com coluna faltando. O aviso "has a header but no data rows" passa a
+  valer só para arquivo que tem cabeçalho de verdade.
+
+  Decisão para você revisar: escolhi falhar o startup em vez de só corrigir o
+  texto do warn. Sem cabeçalho não dá para saber se é o arquivo certo, e subir a
+  API com resultados vazios esconderia um upload truncado. A D18 (CSV só com
+  cabeçalho sobe com warn) continua valendo e foi anotada como restrita a
+  arquivos com cabeçalho. Se preferir manter o warn, a mudança é só a mensagem.
+
+  Alterações:
+  - Teste: um teste de integração em csv-import.test.ts
+    (test/integration/csv-import.test.ts), com as fixtures novas empty.csv (0
+    bytes) e blank-lines.csv.
+  - Docs: README, D33 em DECISIONS.md (mais o ajuste na D18) e entrada em
+    PROMPTS.md.
+
+  Mensagem de commit sugerida:
+
+  fix(importer): fail startup when the CSV has no header
+
+  Lembrete: rode /export para docs/ai/sessions/ ao fim desta fase.
