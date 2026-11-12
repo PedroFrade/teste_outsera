@@ -1,0 +1,238 @@
+
+> <ide_opened_file>The user opened the file e:\Teste
+  Outsera\teste_outsera\src\db\schema.sql in the IDE. This may or may not be
+  related to the current task.</ide_opened_file>
+
+> Achei um caso: errei o nome do parâmetro (cursos em vez de cursor) e a API
+  ignorou sem avisar, devolvendo a primeira página como se estivesse tudo
+  certo. Quero que parâmetro de query desconhecido dê 400 em Problem Details,
+  listando o campo, em todas as rotas. Adiciona teste pra isso, atualiza o
+  README e registra a decisão. Commit em Conventional Commits com o trailer
+  Co-Authored-By, sem push.
+
+● Vou começar explorando o projeto.
+
+  Searched for 1 pattern, read 12 files, ran 6 shell commands (ctrl+o to expand)
+
+● Estou criando um hook global preValidation que confere as chaves da query
+  contra as properties do schema de cada rota, cobrindo também as rotas sem
+  querystring. · summary
+
+● Write(src\shared\unknown-query.ts)
+  ⎿  Wrote 36 lines to src\shared\unknown-query.ts
+       1 import type { FastifyInstance } from 'fastify';
+       2 import { ValidationError } from './errors.js';
+       3
+       4 interface QuerystringSchema {
+       5   properties?: Record<string, unknown>;
+       6 }
+       7
+       8 /**
+       9  * Rejects (400) any query parameter the route's `querystring` s
+         chema does not declare, instead of
+     … +27 lines (ctrl+o to expand)
+
+● Update(src\app.ts)
+  ⎿  Added 1 line
+      13  import { createProducersService, type ProducersService } from '
+          ./modules/producers/service.js';
+      14  import { registerErrorHandler } from './shared/problem-details.
+          js';
+      15  import { registerNotFoundHandler } from './shared/not-found.js'
+          ;
+      16 +import { registerUnknownQueryGuard } from './shared/unknown-que
+         +ry.js';                                                        
+      17  
+      18  export interface BuildAppOptions {
+      19    csvPath: string;
+
+● Update(src\app.ts)
+  ⎿  Added 1 line
+      58  
+      59    registerErrorHandler(app);
+      60    registerNotFoundHandler(app);
+      61 +  registerUnknownQueryGuard(app);                              
+      62    app.addHook('onSend', (request, reply, payload, done) => {
+      63      reply.header('x-request-id', request.id);
+      64      done(null, payload);
+
+● Write(test\integration\unknown-query.test.ts)
+  ⎿  Wrote 77 lines to test\integration\unknown-query.test.ts
+       1 import { after, before, describe, it } from 'node:test';
+       2 import assert from 'node:assert/strict';
+       3 import type { FastifyInstance } from 'fastify';
+       4 import { buildApp } from '../../src/app.js';
+       5 import { OFFICIAL_CSV } from '../helpers/paths.js';
+       6
+       7 const PROBLEM_JSON = /^application\/problem\+json/;
+       8
+       9 describe('unknown query parameters', () => {
+      10   let app: FastifyInstance;
+     … +67 lines (ctrl+o to expand)
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Esta falha vem do meu teste, não do guard: o filtro devolve uma só página,
+  então nextCursor é null. Vou usar uma página sem filtro. · summary
+
+● Update(test\integration\unknown-query.test.ts)
+  ⎿  Added 3 lines, removed 3 lines
+      61    });
+      62  
+      63    it('still accepts every declared parameter', async () => {
+      64 -    const res = await get('/movies?winner=true&year=1980&limit=
+         -5');                                                           
+      65 -    assert.equal(res.statusCode, 200);                         
+      66 -    const next = await get(`/movies?limit=1&cursor=${res.json()
+         -.page.nextCursor}`);                                           
+      64 +    assert.equal((await get('/movies?winner=true&year=1980&limi
+         +t=5')).statusCode, 200);                                       
+      65 +    const first = await get('/movies?limit=1');                
+      66 +    const next = await get(`/movies?limit=1&cursor=${first.json
+         +().page.nextCursor}`);                                         
+      67      assert.equal(next.statusCode, 200);
+      68      assert.equal((await get('/health')).statusCode, 200);
+      69    });
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Tudo verde. Antes de seguir, confirmo que os testes novos falham sem o guard,
+  para garantir que eles testam o comportamento.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Sem o guard, 5 testes falham; restaurado, os 68 passam. Agora a documentação:
+  procuro menções ao total de testes e escrevo README, decisão e prompt.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Update(README.md)
+  ⎿  Added 25 lines
+      228  }
+      229  ```
+      230  
+      231 +**Parâmetros de query desconhecidos:** valem para **todas** as
+          + rotas e respondem `400`, listando cada                       
+      232 +nome em `errors`, em vez de serem ignorados. Sem isso, um erro
+          + de digitação como `?cursos=` em vez de                       
+      233 +`?cursor=` devolveria a primeira página como se estivesse tudo
+          + certo. As rotas sem parâmetros                               
+      234 +(`/health`, `/producers/award-intervals`, `/movies/:id`) não a
+          +ceitam nenhum. Os nomes diferenciam                           
+      235 +maiúsculas de minúsculas (`Limit` não é `limit`).             
+      236 +                                                              
+      237  ```bash
+      238 +curl -i "http://localhost:3000/movies?cursos=eyJpZCI6MTF9"    
+      239 +```                                                           
+      240 +                                                              
+      241 +```json                                                       
+      242 +{                                                             
+      243 +  "type": "about:blank",                                      
+      244 +  "title": "Bad Request",                                     
+      245 +  "status": 400,                                              
+      246 +  "detail": "Unknown query parameter: cursos",                
+      247 +  "instance": "/movies?cursos=eyJpZCI6MTF9",                  
+      248 +  "traceId": "exemplo-123",                                   
+      249 +  "errors": [{ "in": "querystring", "field": "cursos", "messag
+          +e": "is not a known parameter" }]                             
+      250 +}                                                             
+      251 +```                                                           
+      252 +                                                              
+      253 +Se a requisição tiver um parâmetro desconhecido e outro com va
+          +lor inválido, a resposta aponta só o                          
+      254 +desconhecido; o inválido aparece depois que o nome for corrigi
+          +do.                                                           
+      255 +                                                              
+      256 +```bash                                                       
+      257  curl -i http://localhost:3000/movies/999999        # 404, deta
+           il: "Movie 999999 not found"
+      258  curl -i -X POST http://localhost:3000/movies       # 405, cabe
+           çalho "Allow: GET, HEAD"
+      259  ```
+
+● Update(README.md)
+  ⎿  Added 1 line
+      343  | **Importação em stream (`csv-parse`)**                | Memó
+           ria constante, conforme a RFC 4180; transação única. Os ids de
+            produtores e estúdios ficam num `Map` durante a carga, o que 
+           reduziu a importação de 200 mil linhas de ~10 s para ~5 s. |
+      344  | **Paginação por cursor (keyset no `id`)**             | Cust
+           o constante por página e estável, sem `OFFSET`. O `hasMore` ve
+           m de buscar uma linha a mais, sem `COUNT`.                    
+                                                                      |
+      345  | **Erros em Problem Details e um único error handler** | Form
+           ato único e previsível; hierarquia `AppError` → `NotFoundError
+           `/`ValidationError`.                                          
+                                                                      |
+      346 +| **Query desconhecida dá 400 em todas as rotas**       | Um h
+          +ook `preValidation` compara a query com o schema da rota; um n
+          +ome com erro de digitação falha em vez de ser ignorado (D32). 
+          +                                                           |  
+      347  | **405 com `Allow`**                                   | O Fa
+           stify não tem 405 nativo; as rotas são coletadas no hook `onRo
+           ute`, sem dependência extra.                                  
+                                                                      |
+      348  | **Graceful shutdown**                                 | Em `
+           SIGTERM`/`SIGINT` fecha a app (`app.close()`) e depois o banco
+           , com timeout de 10 s. `unhandledRejection` e `uncaughtExcepti
+           on` logam e encerram.                                      |
+      349  | **`buildApp({ csvPath, logger })`**                   | Mont
+           a a app já com os dados e sem chamar `listen`; os testes sobem
+            uma instância isolada por cenário.                           
+                                                                      |
+
+● Update(README.md)
+  ⎿  Added 1 line, removed 1 line
+      357    db/            # conexão, schema.sql, aplicação do schema
+      358    importer/      # leitura do CSV em stream, separação de nome
+           s, carga
+      359    modules/       # health, movies e producers (routes, schemas
+           , service, repository)
+      360 -  shared/        # erros, Problem Details, paginação, 404/405 
+      360 +  shared/        # erros, Problem Details, paginação, 404/405,
+          + query desconhecida                                           
+      361  data/movielist.csv
+      362  test/integration/, test/fixtures/, test/helpers/
+      363  docs/ai/         # registro das interações com a IA
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● Só os seis arquivos esperados. Faço o commit (sem push).
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Agora qualquer parâmetro de query desconhecido devolve 400 em Problem Details
+  em todas as rotas, e o commit 8fc0209 está feito localmente, sem push. Os 68
+  testes passam, e typecheck, lint e prettier estão limpos.
+
+  GET /movies?cursos=... agora responde 400 com errors: [{ "in": "querystring",
+  "field": "cursos", "message": "is not a known parameter" }]. Se houver vários
+  nomes errados, todos entram na lista.
+
+  - Implementação: um hook global preValidation em src/shared/unknown-query.ts,
+    registrado em src/app.ts, compara a query com as properties do schema de
+    cada rota. Rotas sem schema de querystring (/health,
+    /producers/award-intervals, /movies/:id) não aceitam nenhum parâmetro.
+  - Por que não additionalProperties: false: o Ajv do Fastify remove
+    propriedades extras por padrão. O parâmetro seria descartado em silêncio e
+    continuaria passando. Esse caminho também deixaria de fora as rotas sem
+    schema de querystring.
+  - Testes: unknown-query.test.ts (test/integration/unknown-query.test.ts) tem 7
+    casos, incluindo o seu cursos e a preservação de 404 e 405 em URLs com
+    query. Sem o hook, 5 deles falham.
+  - Documentação: o README ganhou um parágrafo com exemplo na seção de erros,
+    uma linha na tabela de decisões e um ajuste na estrutura de pastas. A
+    decisão está na D32 de DECISIONS.md (docs/ai/DECISIONS.md), e a instrução
+    está em PROMPTS.md (docs/ai/PROMPTS.md).
+
+  Dois pontos que você pode querer olhar:
+
+  - Clientes que enviam parâmetros extras (por exemplo ?_=timestamp para furar
+    cache) passam a receber 400.
+  - Se a query tiver um nome desconhecido e outro com valor inválido, a resposta
+    aponta só o desconhecido. O inválido aparece depois de corrigir o nome.
+    Está no README.
+
+  O CLAUDE.md manda não fazer commit, mas você pediu agora, então fiz. O README
+  e a D32 já foram atualizados no mesmo commit. Falta só rodar o /export da
+  sessão para docs/ai/sessions/.
