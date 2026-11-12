@@ -250,3 +250,41 @@ estrito, ESLint + Prettier, config validada por env, banco `:memory:` + `schema.
 erros, error handler global em Problem Details (RFC 9457), 404/405 com `Allow`, propagação de
 `x-request-id`, `GET /health`, `server.ts` com graceful shutdown, 6 testes de integração. CSV
 copiado para `data/movielist.csv`. Sem commits.
+
+## 2026-11-11 — Revisão da fase 1 e início da fase 2
+
+Instrução: fase 1 testada à mão e aprovada. Pediu para trocar o id de requisição gerado quando o
+header `x-request-id` não é enviado (`req-1`, `req-2`, ... repetia entre reinícios e colidia nos
+logs) por `crypto.randomUUID()` e ajustar o teste. Sobre as linhas ignoradas na importação: deixar
+só no log, com o resumo, explicar no README, sem expor no endpoint. Autorizou a fase 2.
+
+**O que foi feito:**
+
+- `genReqId: () => randomUUID()` em `buildApp`; o teste agora exige formato UUID e ids diferentes
+  em duas requisições.
+- Fase 2 — importador de CSV: `csv-reader.ts` (stream com csv-parse), `parse-names.ts`,
+  `import-csv.ts` (transação única, prepared statements, `warn` por linha ignorada com a linha
+  física e resumo final em `warn` quando há linhas ignoradas). `buildApp` agora recebe `csvPath`
+  e rejeita se a importação falhar; `server.ts` encerra com código 1.
+- Testes de importação (`csv-import.test.ts`): CSV oficial (206 filmes, 42 vencedores, filmes
+  conferidos campo a campo) e fixtures (`import-messy.csv`, `missing-column.csv`,
+  `header-only.csv`). Total: 17 testes passando. Sem commits.
+
+## 2026-11-11 — Aprovação da fase 2, ajustes e início da fase 3
+
+Instrução: fase 2 aprovada. Ajuste 1: CSV só com cabeçalho não derruba o startup; sobe com um
+`warn` e o endpoint devolve `min` e `max` vazios. O startup só falha com arquivo inexistente,
+coluna faltando ou CSV malformado. Ajuste 2: como o teste é "somente integração", **na fase 4
+reescrever os testes de importação para passarem pela API (`buildApp` + `GET /movies`) e remover as
+chamadas diretas a `importCsv`** (podem ficar até lá). Confirmou: CSV malformado continua abortando
+o startup, e o `.gitattributes` fica. Autorizou a fase 3.
+
+**O que foi feito:**
+
+- Ajuste 1: `importCsv` loga `warn` ("CSV has a header but no data rows") quando não há linhas de
+  dados; o teste de header-only agora confere o aviso, e o endpoint de intervalos devolve arrays
+  vazios com esse arquivo.
+- Ajuste 2: registrado como pendência da fase 4 (D17 e `CLAUDE.md`).
+- Fase 3: `modules/producers/` (`repository.ts` com a query `LAG`, `service.ts` que calcula uma vez
+  após a carga, `schemas.ts`, `routes.ts`) e `GET /producers/award-intervals`. 8 fixtures novas e
+  `award-intervals.test.ts` (12 testes). Total: 29 testes passando. Sem commits.

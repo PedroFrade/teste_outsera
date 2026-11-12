@@ -10,7 +10,9 @@ revisão de PR e a precisão do cálculo de intervalos com qualquer CSV válido 
 - **Não criar dependências sem aprovação.** Fora de escopo: worker threads, filas, Redis, upload,
   iconv-lite, rate limit, autocannon.
 - **Somente testes de integração** (`node:test` + `app.inject()`), em `test/integration/`. Nada de
-  testes unitários nem de carga.
+  testes unitários nem de carga. Os testes entram pela API (`buildApp` + `app.inject()`), sem chamar
+  funções internas. **Pendente (fase 4):** `csv-import.test.ts` ainda chama `importCsv` direto e
+  deve ser reescrito via `GET /movies`.
 - Nunca alterar um valor esperado de teste para passar sem explicar o motivo ao autor.
 - **Não fazer `git commit` nem `git push`:** o autor revisa e faz manualmente. Sugerir a mensagem
   (Conventional Commits, em inglês) ao fim de cada fase.

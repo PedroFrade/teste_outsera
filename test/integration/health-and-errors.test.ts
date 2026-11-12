@@ -2,12 +2,15 @@ import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../../src/app.js';
+import { OFFICIAL_CSV } from '../helpers/paths.js';
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 describe('health and error handling', () => {
   let app: FastifyInstance;
 
   before(async () => {
-    app = await buildApp();
+    app = await buildApp({ csvPath: OFFICIAL_CSV });
     // Test-only route, registered before the app is ready, to exercise the 500 path.
     app.get('/boom', () => {
       throw new Error('secret internal detail');
@@ -50,9 +53,12 @@ describe('health and error handling', () => {
     assert.equal(res.json().traceId, 'abc-123');
   });
 
-  it('generates a request id when none is sent', async () => {
-    const res = await app.inject({ method: 'GET', url: '/health' });
-    assert.ok(res.headers['x-request-id']);
+  it('generates a unique UUID request id when none is sent', async () => {
+    const first = await app.inject({ method: 'GET', url: '/health' });
+    const second = await app.inject({ method: 'GET', url: '/health' });
+    assert.match(String(first.headers['x-request-id']), UUID);
+    assert.match(String(second.headers['x-request-id']), UUID);
+    assert.notEqual(first.headers['x-request-id'], second.headers['x-request-id']);
   });
 
   it('500 hides internals from the response', async () => {

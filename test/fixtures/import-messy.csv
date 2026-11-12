@@ -1,0 +1,9 @@
+﻿Year ; TITLE ;Studios; Producers ;Winner;Notes
+1990;"Movie A; The Sequel";"Studio X, Studio Y";"Ann One, Bob Two, and Cy Three";YES;x
+
+1991;Movie B;Studio X;  Dee   Four  and Eve Five ;yes;x
+1992;Movie C;Studio X;"Ann One";no;x
+abc;Bad Year;Studio X;Ann One;yes;x
+1993;;Studio X;Ann One;yes;x
+1994;Movie D;Studio Z;Gus  Six, Gus Six;Yes;x
+1995;"Quote ""Q"" Movie";Studio X;Hal Seven;maybe;x

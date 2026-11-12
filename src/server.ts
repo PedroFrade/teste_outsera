@@ -15,7 +15,13 @@ async function main(): Promise<void> {
     throw error;
   }
 
-  const app = await buildApp({ logger: { level: config.logLevel } });
+  let app;
+  try {
+    app = await buildApp({ csvPath: config.csvPath, logger: { level: config.logLevel } });
+  } catch {
+    // buildApp already logged the cause (fatal) before rejecting.
+    process.exit(1);
+  }
 
   const shutdown = (signal: string): void => {
     app.log.info({ signal }, 'Shutting down');
@@ -41,7 +47,12 @@ async function main(): Promise<void> {
   process.on('unhandledRejection', fatal);
   process.on('uncaughtException', fatal);
 
-  await app.listen({ port: config.port, host: config.host });
+  try {
+    await app.listen({ port: config.port, host: config.host });
+  } catch (err) {
+    app.log.fatal({ err }, 'Failed to start listening');
+    process.exit(1);
+  }
 }
 
 main().catch((err: unknown) => {

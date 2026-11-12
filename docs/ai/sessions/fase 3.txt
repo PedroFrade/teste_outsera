@@ -1,0 +1,835 @@
+
+> leia as instruções no arquivo C:\Users\pedro\OneDrive\Área de
+  Trabalho\prompt-claude-code-outsera.md e crie o sistema descrito no md
+
+  Searched for 1 pattern, read 1 file, ran 3 shell commands (ctrl+o to expand)
+
+● Li o prompt e, como ele manda, parei na etapa 1: apresento o plano e espero
+  sua aprovação antes de escrever código. Nada foi criado ainda.
+
+  Dois bloqueios antes de começar
+
+  1. Não encontrei o movielist.csv. Procurei na Área de Trabalho, em Downloads e
+     em Documentos e não há nenhum .csv. Os testes dependem dele (206 filmes,
+     42 vencedores, Joel Silver e Matthew Vaughn). Preciso do caminho do arquivo
+     para copiá-lo para data/movielist.csv.
+  2. Onde criar o projeto. Existe um repositório git vazio, sem commits, em
+     e:\Teste Outsera\teste_outsera. O remote é
+     github.com/PedroFrade/teste_outsera. Proponho criar o projeto dentro dele e
+     não fazer push. Você confirma?
+
+  Árvore de arquivos
+
+  teste_outsera/
+    .nvmrc, .gitignore, .prettierrc, eslint.config.js, tsconfig.json,
+  package.json
+    CLAUDE.md, README.md
+    data/movielist.csv
+    src/
+      server.ts                  # config -> buildApp -> listen; shutdown e
+  handlers de processo
+      app.ts                     # buildApp({ csvPath, logger }): db, schema,
+  importação, rotas, handlers
+      config/env.ts              # valida PORT, HOST, CSV_PATH, LOG_LEVEL
+      db/connection.ts           # abre :memory:, foreign_keys = ON
+      db/schema.sql
+      db/apply-schema.ts
+      importer/csv-reader.ts     # stream com csv-parse
+      importer/parse-names.ts    # separação de produtores e estúdios
+      importer/import-csv.ts     # transação única, prepared statements, resumo
+      modules/movies/            # routes, schemas, repository, service
+      modules/producers/         # routes, schemas, repository, service
+      shared/errors.ts           # AppError, NotFoundError, ValidationError
+      shared/problem-details.ts  # error handler global e formato RFC 9457
+      shared/pagination.ts       # encode/decode do cursor em base64url
+    test/integration/            # *.test.ts
+    test/fixtures/               # CSVs dos cenários
+    docs/ai/PROMPTS.md, DECISIONS.md, sessions/
+
+  Schema SQL
+
+  Segue o modelo do prompt:
+  - movies(id INTEGER PRIMARY KEY, year INTEGER NOT NULL, title TEXT NOT NULL,
+    winner INTEGER NOT NULL CHECK (winner IN (0,1))).
+  - producers(id, name TEXT NOT NULL UNIQUE) e movie_producers(movie_id,
+    producer_id, PRIMARY KEY (movie_id, producer_id)), com FKs.
+  - studios e movie_studios na mesma estrutura.
+  - Índices: movies(winner, year), movie_producers(producer_id) e
+    movie_studios(studio_id).
+
+  Acrescentei um índice que o prompt não pediu, movie_studios(studio_id). Se
+  você preferir, tiro, porque nenhuma consulta o usa. Os índices
+  movie_producers(movie_id) e movie_studios(movie_id) já são cobertos pela PK
+  composta.
+
+  Query de intervalos
+
+  WITH wins AS (
+    SELECT mp.producer_id, m.year
+    FROM movies m JOIN movie_producers mp ON mp.movie_id = m.id
+    WHERE m.winner = 1
+  ),
+  intervals AS (
+    SELECT producer_id,
+           LAG(year) OVER (PARTITION BY producer_id ORDER BY year) AS
+  previous_win,
+           year AS following_win
+    FROM wins
+  ),
+  pairs AS (
+    SELECT p.name AS producer, following_win - previous_win AS interval,
+           previous_win AS previousWin, following_win AS followingWin
+    FROM intervals i JOIN producers p ON p.id = i.producer_id
+    WHERE previous_win IS NOT NULL
+  )
+  SELECT * FROM pairs
+  WHERE interval = (SELECT MIN(interval) FROM pairs)   -- e MAX para o array
+  "max"
+  ORDER BY previousWin, producer;
+
+  - O min e o max saem de duas prepared statements com essa mesma CTE, rodadas
+    uma vez após a carga. O resultado fica em memória.
+  - Como a CTE é repetida, um kind na WHERE evitaria a duplicação. Mantenho duas
+    statements pela legibilidade.
+  - Vitórias do mesmo produtor no mesmo ano dão intervalo 0. Isso acontece sem
+    tratamento extra, porque o LAG pega o par vizinho.
+  - Dentro de um mesmo filme o nome do produtor é deduplicado na importação,
+    então um filme nunca gera par consigo mesmo.
+
+  Contratos dos endpoints
+
+  Rota: GET /producers/award-intervals
+  Entrada: nenhuma
+  Respostas: 200 {min:[], max:[]}, sempre arrays
+  ────────────────────────────────────────
+  Rota: GET /movies
+  Entrada: winner (boolean), year (int), limit (1–500, padrão 50), cursor
+    (base64url)
+  Respostas: 200 {data:[{id,year,title,winner,producers[],studios[]}],
+    page:{limit,nextCursor,hasMore}}, 400
+  ────────────────────────────────────────
+  Rota: GET /movies/:id
+  Entrada: id inteiro
+  Respostas: 200 com o filme, 404, 400 se id não for inteiro
+  ────────────────────────────────────────
+  Rota: GET /health
+  Entrada: nenhuma
+  Respostas: 200 {status:"ok"}
+
+  - O cursor codifica o último id (base64url(JSON {id})). A query é WHERE id > ?
+    ORDER BY id LIMIT limit+1. O item extra indica hasMore sem precisar de
+    COUNT.
+  - Cada página busca produtores e estúdios dos filmes da página em uma consulta
+    só (IN), sem N+1.
+  - Os erros usam application/problem+json com type, title, status, detail,
+    instance, traceId e errors[] na validação.
+
+  Dúvidas e decisões que preciso confirmar
+
+  1. 405 com Allow. O Fastify não faz isso nativamente. Minha proposta é o
+     handler de not-found consultar uma tabela estática de rotas: se o path
+     existe com outro método, responde 405 com Allow; senão, 404. Isso evita
+     registrar rotas catch-all por verbo. OK?
+  2. Versão do Node. Você tem o Node 24.22.1. Proponho .nvmrc = 24 e engines:
+     ">=24", sem checagem externa de qual é o LTS ativo hoje. Está bom?
+  3. Importação em streaming. O csv-parse lê em stream, mas inserir dentro da
+     transação síncrona do better-sqlite3 exige iteração assíncrona (for await
+     sobre o parser) com a transação aberta em volta. Isso funciona porque o
+     better-sqlite3 é síncrono e nada mais usa a conexão durante o startup. Se
+     uma linha ruim aparecer no meio, a transação continua. Só uma falha
+     estrutural (coluna faltando, CSV malformado) aborta e dá rollback.
+     Concorda?
+  4. Número de linha nos warn. Vou usar a linha física do arquivo (o cabeçalho é
+     a linha 1), via info.lines do csv-parse. Isso é mais útil para quem abre o
+     CSV do que o índice do registro.
+  5. winner em GET /movies. O parse booleano do Fastify (AJV com coerção) aceita
+     true/false, e também 1/0. Aceito, ou prefere só true/false?
+  6. Commits. Um commit por fase, sem push. Vou usar o e-mail do seu git config.
+     Confirmo com você antes de qualquer push.
+
+  Assim que você confirmar e me passar o CSV, começo pela fase 1. Também
+  registro este prompt na íntegra em docs/ai/PROMPTS.md e crio o CLAUDE.md já
+  nessa fase.
+
+> Bloqueios
+  1. tanto o csv quanto o enunciado estão na pasta
+  C:\Users\pedro\Downloads\back-end-ai-test
+  2. O projeto será criado no git que estamos conectados agora que é
+  https://github.com/PedroFrade/teste_outsera.git. não quero que voce faça o
+  push e nenhum comit sem que eu revise e faça manualmente
+
+  Duvidas
+  1. Ok
+  2. Vamos deixar na versão que temos agora por causa de outros projetos que
+  estão rodando
+  3. O ideal seria caso tenha uma linha ruim no meio da importação pelomenos
+  notificarmos o usuario para que ele veja que o dado importado pode ter sua
+  analise avariada por um erro no csv mas não precisa dar rollback nesse caso
+  4. OK
+  5. Tanto true e false quanto 0 e 1
+  6. Quero fazer manualmente tanto o comit quanto o push
+
+  Read 2 files, ran 3 shell commands (ctrl+o to expand)
+
+● Encontrei o CSV e o enunciado em PDF. O PDF é consistente com o prompt. Vou
+  começar a fase 1 em e:\Teste Outsera\teste_outsera, sem fazer commit nem push.
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● O better-sqlite3 carrega e as funções de janela funcionam. Agora crio os
+  arquivos de configuração e o código da fase 1.
+
+  Read 1 file, ran 3 shell commands (ctrl+o to expand)
+
+● Update(src\shared\not-found.ts)
+  ⎿  Added 1 line, removed 1 line
+       9  function toMatcher(url: string): RegExp {
+      10    const segments = url
+      11      .split('/')
+      12 -    .map((s) => (s.startsWith(':') ? '[^/]+' : s.replace(/[.*+?
+         -^${}()|[\]\]/g, '\$&')));                                      
+      12 +    .map((s) => (s.startsWith(':') ? '[^/]+' : s.replace(/[.*+?
+         +^${}()|[\]\\]/g, '\\$&')));                                    
+      13    return new RegExp(`^${segments.join('/')}$`);
+      14  }
+      15  
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Fase 1 passa em typecheck, lint e nos 6 testes. Falta validar o build e o
+  startup real, e criar os documentos de registro de IA.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Build, startup com config inválida e o servidor real funcionam. Agora os
+  documentos de registro de IA.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● A fase 1 está pronta e verificada. Typecheck e lint passaram sem erros, e os 6
+  testes de integração passam. Também rodei o build, testei o server.js
+  compilado e confirmei que PORT=abc aborta com mensagem clara. Não fiz nenhum
+  commit nem push.
+
+  O que foi criado em e:\Teste Outsera\teste_outsera
+
+  - Setup: package.json (ESM, engines >=24), .nvmrc com 24, tsconfig estrito,
+    ESLint, Prettier e .gitignore. O CSV foi copiado de Movielist.csv para
+    data/movielist.csv.
+  - src/config/env.ts: valida PORT, HOST, CSV_PATH e LOG_LEVEL, e reporta todos
+    os problemas de uma vez.
+  - src/db/: conexão :memory: com foreign_keys = ON, e schema.sql versionado com
+    os índices.
+  - src/shared/:
+    - errors.ts tem a hierarquia AppError, NotFoundError e ValidationError.
+    - problem-details.ts tem o error handler global em RFC 9457, com traceId, e
+      o 500 sem stack.
+    - not-found.ts responde 404 e 405 com Allow.
+  - src/modules/health/routes.ts: GET /health.
+  - src/app.ts e src/server.ts: montagem da app, propagação de x-request-id e
+    graceful shutdown com timeout. O banco fecha no hook onClose, depois do
+    app.close().
+  - test/integration/health-and-errors.test.ts: cobre /health, 404, 405 com
+    Allow: GET, HEAD, x-request-id e 500 sem vazar detalhes.
+  - docs/ai/PROMPTS.md: contém o prompt na íntegra e as suas respostas de hoje.
+  - docs/ai/DECISIONS.md: registra 10 decisões, e há também o CLAUDE.md. O
+    CLAUDE.md inclui a regra de não commitar nem fazer push.
+
+  Pontos para você revisar
+
+  - Fiz três desvios pequenos do plano:
+    - Criei a pasta modules/health/.
+    - Adicionei @eslint/js e typescript-eslint, necessários para ESLint com
+      TypeScript.
+    - O buildApp ainda recebe só { logger }; o csvPath entra na fase 2, quando
+      for usado.
+    - Estão justificados em DECISIONS.md.
+  - O npm install avisou que 2 pacotes têm scripts de instalação ainda não
+    aprovados (better-sqlite3 e esbuild). Mesmo assim o better-sqlite3 carrega e
+    as funções de janela funcionam, então não precisei aprovar nada.
+  - Para o warn de linha ruim da fase 2, vou logar a linha física e o resumo
+    final (lidas, importadas, ignoradas), sem rollback. Pelo seu pedido de
+    notificar o usuário, também vou deixar esse aviso visível no resumo do log.
+    Se quiser, o aviso pode ir também para o README e para o próprio endpoint;
+    me diga se prefere.
+
+  Commit sugerido para você fazer
+
+  git add -A
+  git commit -m "chore: set up project skeleton, in-memory db, error handling
+  and health endpoint"
+  Se for commitar, vale incluir o trailer Co-Authored-By da IA.
+
+  Lembrete
+
+  Exporte a sessão com /export para docs/ai/sessions/ (obrigatório e avaliado).
+  Depois me diga se aprova e sigo para a fase 2 (importador de CSV e testes de
+  importação).
+
+> Testei a fase 1 na mão e tá tudo ok. health, 404, 405 e o x-request-id
+  voltando certinho. Só uma coisa temo que melhorar quando não mando o header,
+  o id sai como req-1, req-2... Isso reinicia toda vez que sobe a aplicação
+  então pode repetir traceId entre logs. troca pra gerar com
+  crypto.randomUUID() e ajusta o teste.
+
+  Sobre as linhas ignoradas, deixa só no log com o resumo e explica no README.
+  Não precisa colocar no endpoint.
+
+  Pode seguir pra fase 2.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Começo pela troca do genReqId.
+
+  Ran 3 shell commands (ctrl+o to expand)
+
+● Nada foi gravado. Vou usar a ferramenta Write para os arquivos.
+
+● Write(src\importer\parse-names.ts)
+  ⎿  Wrote 15 lines to src\importer\parse-names.ts
+       1 // ", and " must come first so the Oxford comma ("A, B, and C")
+         does not leave a stray "and".
+       2 const SEPARATOR = /,\s*and\s+|,|\s+and\s+/;
+       3
+       4 /**
+       5  * Splits a producers/studios field into distinct names. Names a
+         re trimmed and have inner spaces
+       6  * collapsed; empty names are dropped and repeated names within
+         the same field are kept once.
+       7  * Typos in the data are deliberately not corrected.
+     … +8 lines (ctrl+o to expand)
+
+● Write(src\importer\csv-reader.ts)
+  ⎿  Wrote 77 lines to src\importer\csv-reader.ts
+       1 import { createReadStream } from 'node:fs';
+       2 import { pipeline } from 'node:stream';
+       3 import { parse } from 'csv-parse';
+       4
+       5 export const REQUIRED_COLUMNS = ['year', 'title', 'studios', 'pr
+         oducers', 'winner'] as const;
+       6
+       7 export interface CsvRow {
+       8   /** Physical line of the file where the record ends (the heade
+         r is line 1). */
+     … +69 lines (ctrl+o to expand)
+
+● Write(src\importer\import-csv.ts)
+  ⎿  Wrote 99 lines to src\importer\import-csv.ts
+       1 import type Database from 'better-sqlite3';
+       2 import type { FastifyBaseLogger } from 'fastify';
+       3 import { readCsv, type CsvRow } from './csv-reader.js';
+       4 import { splitNames } from './parse-names.js';
+       5
+       6 export interface ImportSummary {
+       7   read: number;
+       8   imported: number;
+       9   skipped: number;
+      10 }
+     … +89 lines (ctrl+o to expand)
+
+● Write(src\app.ts)
+  ⎿  Added 22 lines, removed 4 lines
+       3  import helmet from '@fastify/helmet';
+       4  import { openDatabase } from './db/connection.js';
+       5  import { applySchema } from './db/apply-schema.js';
+       6 +import { importCsv } from './importer/import-csv.js';          
+       7  import { healthRoutes } from './modules/health/routes.js';
+       8  import { registerErrorHandler } from './shared/problem-details.
+          js';
+       9  import { registerNotFoundHandler } from './shared/not-found.js'
+          ;
+      10  
+      11  export interface BuildAppOptions {
+      12 +  csvPath: string;                                             
+      13    logger?: FastifyServerOptions['logger'];
+      14  }
+      15  
+      16  /**
+      15 - * Builds the app with the database ready. It never calls `list
+         -en`, so tests can                                              
+      16 - * create an isolated instance per fixture and use `app.inject(
+         -)`.                                                            
+      17 + * Builds the app with the CSV already imported. It never calls
+         + `listen`, so tests can                                        
+      18 + * create an isolated instance per fixture and use `app.inject(
+         +)`. Rejects if the import fails.                               
+      19   */
+      18 -export async function buildApp({ logger = false }: BuildAppOpti
+         -ons = {}): Promise<FastifyInstance> {                          
+      19 -  const app = Fastify({ logger, requestIdHeader: 'x-request-id'
+         - });                                                           
+      20 +export async function buildApp({                               
+      21 +  csvPath,                                                     
+      22 +  logger = false,                                              
+      23 +}: BuildAppOptions): Promise<FastifyInstance> {                
+      24 +  // randomUUID keeps request ids unique across restarts (a cou
+         +nter would repeat in the logs).                                
+      25 +  const app = Fastify({                                        
+      26 +    logger,                                                    
+      27 +    requestIdHeader: 'x-request-id',                           
+      28 +    genReqId: () => randomUUID(),                              
+      29 +  });                                                          
+      30  
+      31    const db = openDatabase();
+      32    applySchema(db);
+     ...
+      35      db.close();
+      36    });
+      37  
+      38 +  try {                                                        
+      39 +    await importCsv(db, csvPath, app.log);                     
+      40 +  } catch (err) {                                              
+      41 +    app.log.fatal({ err }, 'Startup aborted: CSV import failed'
+         +);                                                             
+      42 +    await app.close();                                         
+      43 +    throw err;                                                 
+      44 +  }                                                            
+      45 +                                                               
+      46    registerErrorHandler(app);
+      47    registerNotFoundHandler(app);
+      48    app.addHook('onSend', (request, reply, payload, done) => {
+  ⎿  Loaded CLAUDE.md
+
+● Update(src\server.ts)
+  ⎿  Added 7 lines, removed 1 line
+      15      throw error;
+      16    }
+      17  
+      18 -  const app = await buildApp({ logger: { level: config.logLevel
+         - } });                                                         
+      18 +  let app;                                                     
+      19 +  try {                                                        
+      20 +    app = await buildApp({ csvPath: config.csvPath, logger: { l
+         +evel: config.logLevel } });                                    
+      21 +  } catch {                                                    
+      22 +    // buildApp already logged the cause (fatal) before rejecti
+         +ng.                                                            
+      23 +    process.exit(1);                                           
+      24 +  }                                                            
+      25  
+      26    const shutdown = (signal: string): void => {
+      27      app.log.info({ signal }, 'Shutting down');
+
+● Update(src\server.ts)
+  ⎿  Added 6 lines, removed 1 line
+      47    process.on('unhandledRejection', fatal);
+      48    process.on('uncaughtException', fatal);
+      49  
+      50 -  await app.listen({ port: config.port, host: config.host });  
+      50 +  try {                                                        
+      51 +    await app.listen({ port: config.port, host: config.host });
+      52 +  } catch (err) {                                              
+      53 +    app.log.fatal({ err }, 'Failed to start listening');       
+      54 +    process.exit(1);                                           
+      55 +  }                                                            
+      56  }
+      57  
+      58  main().catch((err: unknown) => {
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Write(test\integration\csv-import.test.ts)
+  ⎿  Wrote 210 lines to test\integration\csv-import.test.ts
+       1 import { describe, it } from 'node:test';
+       2 import assert from 'node:assert/strict';
+       3 import type Database from 'better-sqlite3';
+       4 import { buildApp } from '../../src/app.js';
+       5 import { applySchema } from '../../src/db/apply-schema.js';
+       6 import { openDatabase } from '../../src/db/connection.js';
+       7 import { importCsv } from '../../src/importer/import-csv.js';
+       8 import { OFFICIAL_CSV, fixture } from '../helpers/paths.js';
+       9
+      10 type Log = Parameters<typeof importCsv>[2];
+     … +200 lines (ctrl+o to expand)
+● Update(test\integration\health-and-errors.test.ts)
+  ⎿  Added 1 line, removed 1 line
+       7    let app: FastifyInstance;
+       8  
+       9    before(async () => {
+      10 -    app = await buildApp();                                    
+      10 +    app = await buildApp({ csvPath: OFFICIAL_CSV });           
+      11      // Test-only route, registered before the app is ready, to 
+          exercise the 500 path.
+      12      app.get('/boom', () => {
+      13        throw new Error('secret internal detail');
+
+● Update(test\integration\health-and-errors.test.ts)
+  ⎿  Added 3 lines
+       2  import assert from 'node:assert/strict';
+       3  import type { FastifyInstance } from 'fastify';
+       4  import { buildApp } from '../../src/app.js';
+       5 +import { OFFICIAL_CSV } from '../helpers/paths.js';            
+       6  
+       7 +const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-
+         +[0-9a-f]{12}$/;                                                
+       8 +                                                               
+       9  describe('health and error handling', () => {
+      10    let app: FastifyInstance;
+      11  
+
+● Update(test\integration\health-and-errors.test.ts)
+  ⎿  Added 6 lines, removed 3 lines
+      53      assert.equal(res.json().traceId, 'abc-123');
+      54    });
+      55  
+      56 -  it('generates a request id when none is sent', async () => { 
+      57 -    const res = await app.inject({ method: 'GET', url: '/health
+         -' });                                                          
+      58 -    assert.ok(res.headers['x-request-id']);                    
+      56 +  it('generates a unique UUID request id when none is sent', as
+         +ync () => {                                                    
+      57 +    const first = await app.inject({ method: 'GET', url: '/heal
+         +th' });                                                        
+      58 +    const second = await app.inject({ method: 'GET', url: '/hea
+         +lth' });                                                       
+      59 +    assert.match(String(first.headers['x-request-id']), UUID); 
+      60 +    assert.match(String(second.headers['x-request-id']), UUID);
+      61 +    assert.notEqual(first.headers['x-request-id'], second.heade
+         +rs['x-request-id']);                                           
+      62    });
+      63  
+      64    it('500 hides internals from the response', async () => {
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Tudo passou de primeira, incluindo os números de linha 6 e 7. Falta um teste
+  do startup real, com o servidor e um CSV problemático, para ver os logs de
+  verdade.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● O comportamento no startup real está correto. Agora atualizo o registro de IA.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● A fase 2 está pronta. Typecheck e lint passam e os 17 testes de integração
+  passam, os 6 antigos e 11 novos. Não fiz commit nem push. O git mostra os
+  arquivos da fase 1 como já commitados, então você já fez esse commit.
+
+  x-request-id
+
+  O buildApp agora gera o id com crypto.randomUUID() quando o header não vem. O
+  teste exige formato UUID e ids diferentes em duas requisições.
+
+  Importador de CSV
+
+  - Leitura em stream: o csv-parse lê o arquivo em stream (csv-reader.ts).
+    - Aceita BOM, CRLF, aspas e linhas em branco.
+    - O cabeçalho ignora caixa e espaços.
+    - Colunas extras são ignoradas.
+  - Separação de nomes: parse-names.ts trata , and , , e and, com trim, espaços
+    colapsados e deduplicação por filme. "Robbinsand" fica como está.
+  - Carga: import-csv.ts faz tudo em uma transação com prepared statements.
+    - O produtor e o estúdio usam um único INSERT … ON CONFLICT … RETURNING id.
+  - Linhas inválidas:
+    - Ano inválido ou título vazio dá um warn com a linha física, e a linha é
+      ignorada sem rollback.
+    - Se houve ignoradas, o resumo final também sai em warn: "CSV import
+      finished with 2 ignored line(s): the data is incomplete, so results such
+      as award intervals may be affected".
+    - Não vai para o endpoint, como você pediu. O README (fase 5) vai explicar
+      isso.
+  - buildApp({ csvPath, logger }): rejeita se a importação falhar. O server.ts
+    sai com código 1, e o log fatal aparece uma vez só.
+
+  Testes
+
+  - CSV oficial: 206 lidos e importados, 42 vencedores e zero avisos. Quatro
+    filmes são conferidos campo a campo: and, Oxford comma, vírgulas com o typo
+    preservado, e um com um produtor só.
+  - import-messy.csv: cobre BOM, CRLF, cabeçalho bagunçado, coluna extra, aspas
+    com ; e "", linha em branco, Yes/YES/maybe, Oxford comma e espaços extras.
+    Também tem produtor duplicado, ano inválido na linha 6 e título vazio na
+    linha 7. O esperado é 7 lidas, 5 importadas e 2 ignoradas.
+  - Falhas de startup: coluna faltando, arquivo inexistente e arquivo só com
+    cabeçalho. Rodei o servidor real com esses CSVs e os logs saíram como
+    esperado.
+
+  Para você decidir
+
+  - CSV malformado aborta o startup. Aspas mal fechadas fazem rollback e saída
+    com código 1, em vez de virar "linha ruim". Uma aspa aberta pode engolir as
+    linhas seguintes, o que comprometeria a precisão do resultado. Se preferir
+    tratar como linha ruim, é uma opção do csv-parse e eu ajusto.
+  - Testes sem GET /movies. Como esse endpoint só vem na fase 4, os testes de
+    importação chamam importCsv direto num SQLite :memory: real e consultam as
+    tabelas. Só o logger é um stub, para capturar os avisos. Está em
+    DECISIONS.md.
+  - Fixtures com .gitattributes. Criei um .gitattributes com *.csv -text para o
+    git não converter o CRLF e o BOM das fixtures.
+  - Registro: PROMPTS.md e DECISIONS.md estão atualizados, com as decisões D11 a
+    D17.
+
+  Commit sugerido
+
+  git add -A
+  git commit -m "feat: import CSV at startup and use UUID request ids"
+  Se for commitar, vale incluir o trailer Co-Authored-By da IA.
+
+  Lembrete
+
+  Rode /export e salve em docs/ai/sessions/. Quando aprovar, sigo para a fase 3:
+  o endpoint GET /producers/award-intervals com a query LAG e todos os testes
+  de cenário.
+
+> Fase 2 aprovada, ficou boa. Dois ajustes:
+
+  1.CSV só com cabeçalho não deve derrubar o startup. Sobe normal com um warn e
+  o endpoint devolve min e max vazios. Startup só falha com arquivo
+  inexistente, coluna faltando ou CSV malformado.
+  2.O teste diz “somente testes de integração”, então não quero teste chamando
+  importCsv direto. Pode deixar assim por enquanto, mas na fase 4 reescreve
+  esses testes pra passarem pela API (buildApp + GET /movies) e remove as
+  chamadas diretas.
+
+  Sobre o CSV malformado abortar: concordo, mantém. O .gitattributes também tá
+  ok.
+
+  Faz o ajuste 1 e segue pra fase 3.
+
+● Faço o ajuste 1 primeiro (aviso quando o CSV não tem linhas de dados) e depois
+  a fase 3.
+
+● Update(src\importer\import-csv.ts)
+  ⎿  Added 4 lines, removed 1 line
+      86      throw err;
+      87    }
+      88  
+      89 -  if (summary.skipped > 0) {                                   
+      89 +  if (summary.read === 0) {                                    
+      90 +    // Not an error: the app starts and the API answers with em
+         +pty results.                                                   
+      91 +    log.warn(summary, 'CSV has a header but no data rows: nothi
+         +ng was imported');                                             
+      92 +  } else if (summary.skipped > 0) {                            
+      93      log.warn(
+      94        summary,
+      95        `CSV import finished with ${summary.skipped} ignored line
+          (s): the data is incomplete, ` +
+
+● Write(src\modules\producers\repository.ts)
+  ⎿  Wrote 66 lines to src\modules\producers\repository.ts
+       1 import type Database from 'better-sqlite3';
+       2
+       3 export interface AwardInterval {
+       4   producer: string;
+       5   interval: number;
+       6   previousWin: number;
+       7   followingWin: number;
+       8 }
+       9
+      10 export interface AwardIntervals {
+     … +56 lines (ctrl+o to expand)
+
+● Write(src\modules\producers\service.ts)
+  ⎿  Wrote 14 lines to src\modules\producers\service.ts
+       1 import type { ProducersRepository } from './repository.js';
+       2
+       3 /**
+       4  * The data never changes after startup, so the intervals are co
+         mputed once, right after the
+       5  * import, and every request is answered from memory.
+       6  */
+       7 export function createProducersService(repository: ProducersRepo
+         sitory) {
+       8   const awardIntervals = repository.findAwardIntervals();
+     … +6 lines (ctrl+o to expand)
+
+● Write(src\modules\producers\schemas.ts)
+  ⎿  Wrote 23 lines to src\modules\producers\schemas.ts
+       1 const awardIntervalSchema = {
+       2   type: 'object',
+       3   properties: {
+       4     producer: { type: 'string' },
+       5     interval: { type: 'integer' },
+       6     previousWin: { type: 'integer' },
+       7     followingWin: { type: 'integer' },
+       8   },
+       9   required: ['producer', 'interval', 'previousWin', 'followingWi
+         n'],
+     … +14 lines (ctrl+o to expand)
+
+● Write(src\modules\producers\routes.ts)
+  ⎿  Wrote 9 lines to src\modules\producers\routes.ts
+      1 import type { FastifyInstance } from 'fastify';
+      2 import { awardIntervalsSchema } from './schemas.js';
+      3 import type { ProducersService } from './service.js';
+      4
+      5 export function producersRoutes(app: FastifyInstance, { service }
+        : { service: ProducersService }) {
+      6   app.get('/producers/award-intervals', { schema: awardIntervalsS
+        chema }, () =>
+      7     service.getAwardIntervals(),
+      8   );
+     … +1 line (ctrl+o to expand)
+
+● Update(src\app.ts)
+  ⎿  Added 3 lines, removed 1 line
+      35      db.close();
+      36    });
+      37  
+      38 +  let producers: ProducersService;                             
+      39    try {
+      40      await importCsv(db, csvPath, app.log);
+      41 +    producers = createProducersService(createProducersRepositor
+         +y(db));                                                        
+      42    } catch (err) {
+      41 -    app.log.fatal({ err }, 'Startup aborted: CSV import failed'
+         -);                                                             
+      43 +    app.log.fatal({ err }, 'Startup aborted: loading the CSV da
+         +ta failed');                                                   
+      44      await app.close();
+      45      throw err;
+      46    }
+
+● Update(src\app.ts)
+  ⎿  Added 1 line
+      54  
+      55    await app.register(helmet);
+      56    app.register(healthRoutes);
+      57 +  app.register(producersRoutes, { service: producers });       
+      58  
+      59    return app;
+      60  }
+
+● Update(src\app.ts)
+  ⎿  Added 3 lines
+       5  import { applySchema } from './db/apply-schema.js';
+       6  import { importCsv } from './importer/import-csv.js';
+       7  import { healthRoutes } from './modules/health/routes.js';
+       8 +import { createProducersRepository } from './modules/producers/
+         +repository.js';                                                
+       9 +import { producersRoutes } from './modules/producers/routes.js'
+         +;                                                              
+      10 +import { createProducersService, type ProducersService } from '
+         +./modules/producers/service.js';                               
+      11  import { registerErrorHandler } from './shared/problem-details.
+          js';
+      12  import { registerNotFoundHandler } from './shared/not-found.js'
+          ;
+      13  
+
+● Agora as fixtures, com os resultados calculados à mão.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Write(test\integration\award-intervals.test.ts)
+  ⎿  Wrote 125 lines to test\integration\award-intervals.test.ts
+       1 import { describe, it } from 'node:test';
+       2 import assert from 'node:assert/strict';
+       3 import { buildApp } from '../../src/app.js';
+       4 import { OFFICIAL_CSV, fixture } from '../helpers/paths.js';
+       5
+       6 const URL = '/producers/award-intervals';
+       7
+       8 async function getIntervals(csvPath: string) {
+       9   const app = await buildApp({ csvPath });
+      10   try {
+     … +115 lines (ctrl+o to expand)
+
+● Update(test\integration\csv-import.test.ts)
+  ⎿  Added 4 lines, removed 2 lines
+      187  });
+      188  
+      189  describe('CSV import: structural errors', () => {
+      190 -  it('imports nothing from a file with only the header', async
+          - () => {                                                      
+      191 -    const { db, summary } = await load(fixture('header-only.cs
+          -v'));                                                         
+      190 +  it('imports nothing, with a warning, from a file with only t
+          +he header', async () => {                                     
+      191 +    const { db, summary, warnings } = await load(fixture('head
+          +er-only.csv'));                                               
+      192      assert.deepStrictEqual(summary, { read: 0, imported: 0, sk
+           ipped: 0 });
+      193      assert.equal(count(db, 'SELECT COUNT(*) AS n FROM movies')
+           , 0);
+      194 +    assert.equal(warnings.length, 1);                         
+      195 +    assert.match(warnings[0]!.message, /no data rows/);       
+      196    });
+      197  
+      198    it('buildApp rejects when a required column is missing', asy
+           nc () => {
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Os 29 testes passam, incluindo o resultado exato do CSV oficial. Atualizo o
+  registro de IA e registro o seu ajuste 2 como pendência da fase 4.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● A fase 3 está pronta. Typecheck e lint passam e os 29 testes de integração
+  passam, 12 deles novos. Não fiz commit nem push.
+
+  Ajuste 1: CSV só com cabeçalho
+
+  O app sobe normalmente e loga warn ("CSV has a header but no data rows:
+  nothing was imported"). O endpoint devolve { "min": [], "max": [] }. O startup
+  continua falhando só com arquivo inexistente, coluna faltando ou CSV
+  malformado. O teste agora confere o aviso e o endpoint.
+
+  Fase 3: GET /producers/award-intervals
+
+  - Query: producers/repository.ts calcula os pares consecutivos com LAG(year)
+    OVER (PARTITION BY producer_id ORDER BY year), só sobre filmes vencedores.
+    Duas prepared statements filtram o menor (MIN) e o maior (MAX) intervalo,
+    com empates incluídos, ordenados por previousWin e producer.
+  - Cache em memória: o service.ts roda a query uma vez logo após a importação,
+    e cada requisição devolve o resultado já calculado.
+  - Schema: o schema de saída fica em schemas.ts e a rota em routes.ts. O
+    buildApp conecta tudo e faz o startup abortar também se o cálculo falhar.
+
+  Testes
+
+  Com o CSV oficial, o deepStrictEqual da resposta inteira bate: Joel Silver (1
+  ano, 1990 a 1991) em min e Matthew Vaughn (13 anos, 2002 a 2015) em max. Há
+  também testes de resposta JSON, idempotência e 405 com Allow no DELETE.
+
+  Os cenários usam 8 fixtures novas com resultado calculado à mão. Cada uma
+  isola uma regra:
+  - Empates: empate em min e em max com produtores diferentes. Uma indicação sem
+    vitória não gera par.
+  - Pares consecutivos: só contam pares consecutivos, mesmo com as linhas fora
+    de ordem. Eve ganha em 1980, 1982, 1990 e 2000, e o par 1980 a 2000 não
+    existe.
+  - Mesmo produtor: o mesmo produtor aparece em min e em max.
+  - Sem repetidos: nenhum produtor com duas vitórias devolve arrays vazios.
+  - Mesmo ano: duas vitórias no mesmo ano dão intervalo 0.
+  - Formatação: BOM, CRLF, aspas, linha em branco, vírgula de Oxford, espaços
+    extras e YES/Yes. Essas regras afetam o resultado, porque são elas que
+    separam os nomes dos produtores.
+  - Linha inválida: uma linha com ano inválido é ignorada sem derrubar a
+    importação.
+  - Só cabeçalho: um CSV só com cabeçalho devolve arrays vazios.
+
+  Decisão para você confirmar
+
+  Usei SELECT DISTINCT no resultado. Se um produtor ganha três filmes no mesmo
+  ano, o LAG gera duas vezes o mesmo par (1999 a 1999, intervalo 0). Repetir uma
+  linha idêntica seria ruído, então ela sai uma vez, e um mesmo produtor
+  continua aparecendo mais de uma vez quando os pares empatados são diferentes.
+
+  Na prática isso só importa com três ou mais vitórias no mesmo ano, que o CSV
+  oficial não tem. Se você preferir o resultado "cru", é só tirar o DISTINCT e
+  ajustar o caso do Lou no teste. Está registrado como D20 no DECISIONS.md.
+
+  Registro e pendência
+
+  - Registro: PROMPTS.md e DECISIONS.md estão atualizados com as decisões D18 a
+    D21.
+  - Pendência da fase 4: o seu ajuste 2 virou pendência. Reescrever os testes de
+    csv-import.test.ts para passarem por buildApp e GET /movies, e remover as
+    chamadas diretas a importCsv. Também deixei isso no CLAUDE.md e na nota da
+    D17.
+
+  Commit sugerido
+
+  git add -A
+  git commit -m "feat: add producer award intervals endpoint"
+  Se for commitar, vale incluir o trailer Co-Authored-By da IA.
+
+  Lembrete
+
+  Rode /export e salve em docs/ai/sessions/. Quando aprovar, sigo para a fase 4:
+  GET /movies (paginação por cursor e filtros) e GET /movies/:id, com os testes
+  e a reescrita dos testes de importação via API.
