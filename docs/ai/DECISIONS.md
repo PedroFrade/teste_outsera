@@ -275,3 +275,27 @@ ORDER BY year)`) → `intervals`; duas prepared statements (`MIN` e `MAX`) filtr
   requisição (serializa ~50 KB); `GET /movies?limit=500` ~4 ms; `GET /movies/:id` < 1 ms; RSS ~170 MB.
 - **O que continua sendo o custo:** os ~1,2 milhão de `INSERT` de filmes e vínculos. Para o CSV do
   teste (~16 KB) tudo isso leva milissegundos.
+
+## D32 — Parâmetro de query desconhecido responde 400 em todas as rotas
+
+- **Achado:** `GET /movies?cursos=...` (typo de `cursor`) foi ignorado e devolveu a primeira página
+  com 200, sem nenhum aviso.
+- **Escolha:** hook global `preValidation` (`src/shared/unknown-query.ts`) que compara as chaves de
+  `request.query` com as `properties` do schema `querystring` da rota. Cada nome desconhecido vira
+  um item de `errors` (`in: "querystring"`, `field`, `message`), no mesmo formato dos erros de
+  validação, via `ValidationError` e o error handler global. Rota sem schema de querystring não
+  aceita nenhum parâmetro.
+- **Alternativas:** (a) `additionalProperties: false` em cada schema de querystring: o Ajv do
+  Fastify usa `removeAdditional: true` por padrão, então o parâmetro seria removido em silêncio e a
+  requisição passaria (seria preciso mudar a opção do Ajv); além disso, `/health` e
+  `/producers/award-intervals` não têm schema de querystring e ficariam de fora, e cada rota nova
+  teria de lembrar de declarar. (b) Hook `onRoute` que injeta um schema de querystring vazio nas
+  rotas que não têm: mais indireto, sem ganho. (c) Manter ignorando, por ser o comportamento
+  comum de APIs HTTP: descartado porque aqui o erro silencioso muda o resultado (outra página).
+- **Detalhes:** a checagem diferencia maiúsculas de minúsculas; roda antes da validação de tipos,
+  então uma query com nome desconhecido e valor inválido reporta só o nome desconhecido; requisições
+  que caem no handler de 404/405 (`request.is404`) não são afetadas. Não há dependência nova.
+- **Efeito para clientes:** quem hoje envia parâmetros extras (ex.: `?_=timestamp` para furar cache)
+  passa a receber 400. A API é nova e o README lista os parâmetros aceitos.
+- **Testes:** `test/integration/unknown-query.test.ts` (7 casos). Sem o hook, 5 deles falham.
+  Total: 68 testes.

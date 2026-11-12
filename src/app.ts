@@ -13,6 +13,7 @@ import { producersRoutes } from './modules/producers/routes.js';
 import { createProducersService, type ProducersService } from './modules/producers/service.js';
 import { registerErrorHandler } from './shared/problem-details.js';
 import { registerNotFoundHandler } from './shared/not-found.js';
+import { registerUnknownQueryGuard } from './shared/unknown-query.js';
 
 export interface BuildAppOptions {
   csvPath: string;
@@ -57,6 +58,7 @@ export async function buildApp({
 
   registerErrorHandler(app);
   registerNotFoundHandler(app);
+  registerUnknownQueryGuard(app);
   app.addHook('onSend', (request, reply, payload, done) => {
     reply.header('x-request-id', request.id);
     done(null, payload);

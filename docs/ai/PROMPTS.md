@@ -359,3 +359,22 @@ e `npm start` sem erros nem avisos).
 (`engines` do projeto raiz de `>=24` para `>=22`, que estava desatualizado desde a D30) e registrou
 `hasInstallScript: true` no `better-sqlite3` (o `node-gyp` implícito descrito na D28; sem efeito com
 o `.npmrc`).
+
+## 2026-11-11 — Parâmetro de query desconhecido dá 400
+
+Instrução: o autor errou o nome do parâmetro (`cursos` em vez de `cursor`) e a API ignorou sem
+avisar, devolvendo a primeira página. Pedido: parâmetro de query desconhecido deve dar 400 em
+Problem Details, listando o campo, em todas as rotas; adicionar teste, atualizar o README, registrar
+a decisão e fazer o commit (Conventional Commits, com o trailer `Co-Authored-By`), sem push.
+
+**O que foi feito:**
+
+- `src/shared/unknown-query.ts`: hook `preValidation` global, registrado em `app.ts`. Compara a query
+  com o schema `querystring` de cada rota (sem schema, nenhum parâmetro é aceito) e responde 400 com
+  um item em `errors` por nome desconhecido. Decisão e alternativas na D32.
+- `test/integration/unknown-query.test.ts`: 7 casos (typo, vários nomes, repetido/sem valor,
+  maiúsculas, rotas sem schema de querystring, parâmetros válidos, 404/405 preservados). Sem o hook,
+  5 falham. 68 testes passando; typecheck, lint e prettier limpos.
+- README: seção de erros (com exemplo), tabela de decisões e estrutura de `shared/`.
+- O `CLAUDE.md` manda não fazer commit; desta vez o autor pediu o commit explicitamente, então ele
+  foi feito localmente, sem push.

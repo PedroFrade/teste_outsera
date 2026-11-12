@@ -228,6 +228,31 @@ curl -i "http://localhost:3000/movies?limit=0&year=abc"
 }
 ```
 
+**Parâmetros de query desconhecidos:** valem para **todas** as rotas e respondem `400`, listando cada
+nome em `errors`, em vez de serem ignorados. Sem isso, um erro de digitação como `?cursos=` em vez de
+`?cursor=` devolveria a primeira página como se estivesse tudo certo. As rotas sem parâmetros
+(`/health`, `/producers/award-intervals`, `/movies/:id`) não aceitam nenhum. Os nomes diferenciam
+maiúsculas de minúsculas (`Limit` não é `limit`).
+
+```bash
+curl -i "http://localhost:3000/movies?cursos=eyJpZCI6MTF9"
+```
+
+```json
+{
+  "type": "about:blank",
+  "title": "Bad Request",
+  "status": 400,
+  "detail": "Unknown query parameter: cursos",
+  "instance": "/movies?cursos=eyJpZCI6MTF9",
+  "traceId": "exemplo-123",
+  "errors": [{ "in": "querystring", "field": "cursos", "message": "is not a known parameter" }]
+}
+```
+
+Se a requisição tiver um parâmetro desconhecido e outro com valor inválido, a resposta aponta só o
+desconhecido; o inválido aparece depois que o nome for corrigido.
+
 ```bash
 curl -i http://localhost:3000/movies/999999        # 404, detail: "Movie 999999 not found"
 curl -i -X POST http://localhost:3000/movies       # 405, cabeçalho "Allow: GET, HEAD"
@@ -318,6 +343,7 @@ As decisões completas, com as alternativas consideradas, estão em
 | **Importação em stream (`csv-parse`)**                | Memória constante, conforme a RFC 4180; transação única. Os ids de produtores e estúdios ficam num `Map` durante a carga, o que reduziu a importação de 200 mil linhas de ~10 s para ~5 s. |
 | **Paginação por cursor (keyset no `id`)**             | Custo constante por página e estável, sem `OFFSET`. O `hasMore` vem de buscar uma linha a mais, sem `COUNT`.                                                                               |
 | **Erros em Problem Details e um único error handler** | Formato único e previsível; hierarquia `AppError` → `NotFoundError`/`ValidationError`.                                                                                                     |
+| **Query desconhecida dá 400 em todas as rotas**       | Um hook `preValidation` compara a query com o schema da rota; um nome com erro de digitação falha em vez de ser ignorado (D32).                                                            |
 | **405 com `Allow`**                                   | O Fastify não tem 405 nativo; as rotas são coletadas no hook `onRoute`, sem dependência extra.                                                                                             |
 | **Graceful shutdown**                                 | Em `SIGTERM`/`SIGINT` fecha a app (`app.close()`) e depois o banco, com timeout de 10 s. `unhandledRejection` e `uncaughtException` logam e encerram.                                      |
 | **`buildApp({ csvPath, logger })`**                   | Monta a app já com os dados e sem chamar `listen`; os testes sobem uma instância isolada por cenário.                                                                                      |
@@ -331,7 +357,7 @@ src/
   db/            # conexão, schema.sql, aplicação do schema
   importer/      # leitura do CSV em stream, separação de nomes, carga
   modules/       # health, movies e producers (routes, schemas, service, repository)
-  shared/        # erros, Problem Details, paginação, 404/405
+  shared/        # erros, Problem Details, paginação, 404/405, query desconhecida
 data/movielist.csv
 test/integration/, test/fixtures/, test/helpers/
 docs/ai/         # registro das interações com a IA
