@@ -26,6 +26,9 @@ revisão de PR e a precisão do cálculo de intervalos com qualquer CSV válido 
   responde em Problem Details (`application/problem+json`) com `traceId`.
 - Toda rota tem JSON Schema de entrada e de saída.
 - Config só por variáveis de ambiente, validadas em `src/config/env.ts`.
+- `.npmrc` tem `ignore-scripts=true` de propósito (ver D28): não remover, ou `npm ci` volta a tentar
+  compilar o `better-sqlite3`. Por isso o `start` compila sozinho (D29).
+- `engines` `>=22`: não usar recursos que exijam Node 24.
 
 ## Comandos
 

@@ -309,3 +309,53 @@ reescrever os testes de importação para passarem pela API.
   inválido (agora `allErrors: true`, listando todos em `errors`) e `INVALID_OPENING_QUOTE` do
   csv-parse não era reconhecido como CSV malformado (agora `instanceof CsvError`).
 - Total: 60 testes passando. Sem commits.
+
+## 2026-11-11 — Aprovação da fase 4 e fase 5
+
+Instrução: fase 4 aprovada. Ajuste: `winner` deve aceitar só `true`/`false`, com `type: boolean`
+normal (aceitar `1`/`0` é código a mais). Na fase 5, além do README e da revisão final: README em
+português; conferir se roda no Node 22 e, se rodar, baixar `engines` para `>=22`; testar como o
+avaliador (clone limpo em pasta temporária, `npm ci`, `npm test` e `npm start` do zero) e reportar
+qualquer aviso ou erro; ao fim, checklist item a item do PDF do teste.
+
+**O que foi feito (fase 5):**
+
+- `winner` simplificado (schema `type: boolean`, rota sem conversão; `winner=1` agora é 400 e tem
+  teste). D25 reescrita.
+- Teste de clone limpo (cópia dos arquivos versionáveis para uma pasta temporária) em Node 24 e em
+  Node 22. **Achou um erro real:** `npm ci` falhava (`node-gyp rebuild` sem Python). Corrigido com
+  `.npmrc` `ignore-scripts=true` (D28) e `start` que compila sozinho (D29). `engines` para `>=22`
+  (D30). Reportados os avisos restantes: 10 vulnerabilidades moderadas só em dev (ESLint/minimatch).
+- Medição manual de desempenho com 200 mil linhas (D31), sem alterar o código.
+- `README.md` em português e revisão final de código. Sem commits.
+
+## 2026-11-11 — Fechamento da fase 5
+
+Instrução: (1) remover da raiz os arquivos vazios `npm`, `tsx` e `teste-outsera@1.0.0`; (2) o
+tempo de ~9 s para 200 mil linhas incomodou: cachear os ids de produtores e estúdios num `Map`
+durante a importação, em vez do upsert por nome; se melhorar bem, manter e atualizar os números no
+README e na D31; se não, deixar como está.
+
+**O que foi feito:**
+
+- Os três arquivos vazios foram removidos da árvore de trabalho (a remoção aparece como `D` no
+  `git status`; o commit é do autor).
+- `idResolver` em `import-csv.ts`: `Map<nome, id>` local à importação, com `INSERT` só na primeira
+  ocorrência de cada nome. Medido com um CSV novo de 200 mil linhas e ~60 mil produtores distintos
+  (mais exigente que o primeiro): importação de ~10,1 s para ~5,1 s, com resultados idênticos.
+  Mantido. README, D15 e D31 atualizados. 61 testes passando. Sem commits.
+
+**Incidente durante a verificação final (registrado por transparência):** um script de teste do
+agente copiava os arquivos listados por `git ls-files`, que ainda inclui os três arquivos recém
+removidos (continuam no índice). O `cp` falhou, o `cd` para a pasta temporária foi pulado e o
+`npm ci` rodou dentro do repositório real, apagando parte do `node_modules` (parou com `EPERM` num
+`esbuild.exe` em uso pelo `npm run dev` do autor). Nenhum arquivo versionado foi afetado. O
+`node_modules` foi restaurado com `npm install`; os 5 arquivos `.log` criados por engano na raiz
+foram removidos. O script passou a ignorar arquivos inexistentes e a abortar fora da pasta
+temporária, e o ciclo de clone limpo foi refeito (Node 24 e 22: `npm ci`, typecheck, lint, 61 testes
+e `npm start` sem erros nem avisos).
+
+**Efeito colateral aceito:** o `npm install` sincronizou o `package-lock.json` com o `package.json`
+(`engines` do projeto raiz de `>=24` para `>=22`, que estava desatualizado desde a D30) e registrou
+`hasInstallScript: true` no `better-sqlite3` (o `node-gyp` implícito descrito na D28; sem efeito com
+o `.npmrc`).

@@ -26,6 +26,23 @@ function isBlank(row: CsvRow): boolean {
 }
 
 /**
+ * Returns a function that gives the id of a name, inserting it the first time it is seen. Ids are
+ * remembered in a Map for the duration of the import: a name that repeats across thousands of
+ * movies then costs a lookup in memory instead of a write to the database.
+ */
+function idResolver(insert: Database.Statement): (name: string) => number {
+  const ids = new Map<string, number>();
+  return (name) => {
+    let id = ids.get(name);
+    if (id === undefined) {
+      id = Number(insert.run(name).lastInsertRowid);
+      ids.set(name, id);
+    }
+    return id;
+  };
+}
+
+/**
  * Loads the CSV into the database in a single transaction, using prepared statements created
  * once. Invalid rows are skipped with a warning and never abort the import; structural errors
  * (missing file, missing column, malformed CSV) roll everything back and are rethrown.
@@ -40,13 +57,8 @@ export async function importCsv(
   log: ImportLogger,
 ): Promise<ImportSummary> {
   const insertMovie = db.prepare('INSERT INTO movies (year, title, winner) VALUES (?, ?, ?)');
-  // The no-op update makes RETURNING yield the id for new and existing names alike.
-  const upsertProducer = db.prepare(
-    'INSERT INTO producers (name) VALUES (?) ON CONFLICT (name) DO UPDATE SET name = excluded.name RETURNING id',
-  );
-  const upsertStudio = db.prepare(
-    'INSERT INTO studios (name) VALUES (?) ON CONFLICT (name) DO UPDATE SET name = excluded.name RETURNING id',
-  );
+  const producerId = idResolver(db.prepare('INSERT INTO producers (name) VALUES (?)'));
+  const studioId = idResolver(db.prepare('INSERT INTO studios (name) VALUES (?)'));
   const linkProducer = db.prepare(
     'INSERT INTO movie_producers (movie_id, producer_id) VALUES (?, ?)',
   );
@@ -70,14 +82,8 @@ export async function importCsv(
 
       const winner = row.winner.trim().toLowerCase() === 'yes' ? 1 : 0;
       const movieId = Number(insertMovie.run(checked.year, checked.title, winner).lastInsertRowid);
-      for (const name of splitNames(row.producers)) {
-        const { id } = upsertProducer.get(name) as { id: number };
-        linkProducer.run(movieId, id);
-      }
-      for (const name of splitNames(row.studios)) {
-        const { id } = upsertStudio.get(name) as { id: number };
-        linkStudio.run(movieId, id);
-      }
+      for (const name of splitNames(row.producers)) linkProducer.run(movieId, producerId(name));
+      for (const name of splitNames(row.studios)) linkStudio.run(movieId, studioId(name));
       summary.imported++;
     }
     db.exec('COMMIT');

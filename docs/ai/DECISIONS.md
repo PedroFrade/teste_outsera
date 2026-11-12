@@ -99,12 +99,19 @@ Cada decisão relevante, com as alternativas consideradas e o motivo.
 - **Motivo:** `db.transaction()` só aceita função síncrona. A leitura é em stream (memória
   constante para CSVs grandes) e, durante o startup, nada mais usa a conexão.
 
-## D15 — `INSERT ... ON CONFLICT DO UPDATE ... RETURNING id` para produtores e estúdios
+## D15 — Ids de produtores e estúdios: de `ON CONFLICT ... RETURNING` para cache em `Map`
 
-- **Escolha:** um único prepared statement devolve o id, novo ou existente.
-- **Alternativas:** `INSERT OR IGNORE` seguido de `SELECT id` (duas statements por nome); cache
-  `Map<nome, id>` em memória.
-- **Motivo:** uma statement por nome, sem estado extra e sem risco de o `Map` divergir do banco.
+> **Substituída na fase 5 (pedido do autor), ver D31.** A versão inicial usava um único
+> `INSERT ... ON CONFLICT (name) DO UPDATE ... RETURNING id` por nome.
+
+- **Escolha atual:** `Map<nome, id>` local à chamada de `importCsv` (`idResolver`). Na primeira vez que
+  um nome aparece, faz `INSERT` e guarda o `lastInsertRowid`; nas demais, só consulta o `Map`.
+- **Alternativas:** `ON CONFLICT DO UPDATE ... RETURNING id` (a versão inicial: uma escrita no banco
+  por nome em cada filme, mesmo para nomes repetidos); `SELECT` antes do `INSERT`.
+- **Motivo:** o risco que levou à escolha inicial (o `Map` divergir do banco) não existe aqui: o `Map`
+  vive só durante a importação, dentro da transação, e é descartado junto com ela (em erro há
+  rollback e a exceção sobe). A restrição `UNIQUE (name)` continua como rede de segurança. Ganho
+  medido na D31: importação de 200 mil linhas de ~10 s para ~5 s.
 
 ## D16 — Regras de separação e de linhas em branco
 
@@ -189,12 +196,13 @@ ORDER BY year)`) → `intervals`; duas prepared statements (`MIN` e `MAX`) filtr
   mais fiel ao CSV e não exige coluna nova. Depende de `ORDER BY` dentro de agregado (SQLite
   ≥ 3.44; o better-sqlite3 instalado traz 3.54).
 
-## D25 — `winner` como enum de string, não `type: boolean`
+## D25 — `winner` como `type: boolean` (só `true`/`false`)
 
-- **Escolha:** `{ type: 'string', enum: ['true','false','1','0'] }`, convertido na rota.
-- **Alternativas:** `type: 'boolean'` do Ajv.
-- **Motivo:** a coerção booleana do Ajv aceita `"true"`/`"false"` mas rejeita `"1"`/`"0"` em query
-  string, e o autor pediu os dois formatos.
+- **Escolha:** `winner: { type: 'boolean' }` no schema da query; o Ajv converte `"true"`/`"false"`.
+  `winner=1` e `winner=0` respondem 400. (Decisão do autor na revisão da fase 4.)
+- **Alternativas:** aceitar também `1`/`0` (enum de string convertido na rota).
+- **Motivo:** o enum de string era código a mais sem requisito que o exigisse. Substitui a versão
+  inicial da D25, que aceitava `1`/`0`.
 
 ## D26 — Ajv com `allErrors: true`
 
@@ -212,3 +220,58 @@ ORDER BY year)`) → `intervals`; duas prepared statements (`MIN` e `MAX`) filtr
   então o teste de CSV malformado pegou uma aspa solta que passaria como erro genérico. Observação:
   para aspa aberta e nunca fechada o parser informa a linha onde desistiu (fim do arquivo), não
   a linha onde a aspa abriu.
+
+## D28 — `.npmrc` com `ignore-scripts=true`
+
+- **Escolha:** `.npmrc` versionado com `ignore-scripts=true`.
+- **Alternativas:** instalar com `npm ci --ignore-scripts` (só no README); trocar o `better-sqlite3`
+  por uma versão que baixa o binário com `prebuild-install`; exigir Python e C++ no ambiente.
+- **Motivo:** achado no teste de clone limpo. O `better-sqlite3` 13 declara `gypfile: false` e traz
+  binários prontos em `prebuilds/`, mas o `package-lock.json` não guarda o `gypfile`; então o
+  `npm ci` assume o `node-gyp rebuild` implícito e falha sem Python e compilador C++ (reproduzido
+  no Windows; um `npm install` sem lockfile não falha). O `.npmrc` vale para qualquer versão do npm
+  e nenhuma dependência precisa de script de instalação (os 61 testes passam sem eles). Efeito
+  colateral: com `ignore-scripts`, o npm não roda `prestart`; ver D29.
+
+## D29 — `npm start` compila e sobe
+
+- **Escolha:** `"start": "npm run build && node dist/server.js"`.
+- **Alternativas:** `prestart` (não roda com `ignore-scripts`); `start` com `tsx`; exigir o build manual.
+- **Motivo:** num clone limpo não existe `dist/`, e o avaliador vai rodar `npm ci` e `npm start`.
+  O script continua executando o código compilado, como pede o prompt.
+
+## D30 — `engines` `>=22`
+
+- **Escolha:** `"node": ">=22"`; o `.nvmrc` continua em 24 (versão de desenvolvimento).
+- **Alternativas:** manter `>=24`.
+- **Motivo:** o avaliador pode não estar no Node 24. O `better-sqlite3` 13 já exige `>=22`, então 22 é
+  o piso real. Verificado: `npm ci`, typecheck, lint, `npm test` (61 de 61) e `npm start` em Node 22.23
+  e em Node 24.22, a partir de uma cópia limpa.
+
+## D31 — Desempenho: medido; cache de ids em `Map` adotado
+
+- **Primeira medição** (fora do repositório; CSV sintético de 200 mil linhas, ~17 MB, com poucos
+  produtores distintos): parse 0,7 s; importação 8,8 s; cálculo dos intervalos (2 queries `LAG`)
+  0,26 s; `GET /movies?limit=500` ~4 ms; `GET /movies/:id` < 1 ms. A importação dominava.
+- **Alternativas medidas para o upsert** (mesmo CSV): `SELECT` antes do `INSERT` 5,1 s; `Map` 4,1 s;
+  `ON CONFLICT DO UPDATE` (então em uso) 8,7 s. Na época, decidi manter o upsert por ser mais simples,
+  porque o ganho só aparecia em arquivos grandes.
+- **Pedido do autor:** testar o `Map`; manter se melhorasse bem. Como o CSV sintético tinha poucos
+  produtores distintos (o que favorece um cache), a comparação final usou um CSV novo, de 200 mil
+  linhas e 17,5 MB, com 59.997 produtores e 1.500 estúdios distintos, e o código real
+  (`importCsv`), três execuções cada:
+
+  | Versão                                         | Importação             |
+  | ---------------------------------------------- | ---------------------- |
+  | `ON CONFLICT DO UPDATE ... RETURNING` (antes)  | 10,30 / 9,96 / 10,09 s |
+  | `Map` com `INSERT` só para nomes novos (agora) | 5,23 / 5,00 / 5,04 s   |
+
+  Mesmos resultados nas duas versões: 200.000 filmes, 59.997 produtores, 1.500 estúdios e 599.991
+  vínculos. Startup completo (importação, schema e intervalos) com o `Map`: 5,33 s.
+
+- **Escolha:** manter o `Map` (metade do tempo), com 61 testes passando. A mudança são ~12 linhas
+  (`idResolver`) e substitui as duas statements de upsert (D15).
+- **Demais números (com o `Map`):** `GET /producers/award-intervals` ~50 ms na primeira
+  requisição (serializa ~50 KB); `GET /movies?limit=500` ~4 ms; `GET /movies/:id` < 1 ms; RSS ~170 MB.
+- **O que continua sendo o custo:** os ~1,2 milhão de `INSERT` de filmes e vínculos. Para o CSV do
+  teste (~16 KB) tudo isso leva milissegundos.

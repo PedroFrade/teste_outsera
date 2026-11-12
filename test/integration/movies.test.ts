@@ -125,17 +125,13 @@ describe('GET /movies and GET /movies/:id (official CSV)', () => {
   });
 
   describe('filters', () => {
-    it('filters winners with true/false and 1/0', async () => {
-      for (const value of ['true', '1']) {
-        const winners = await fetchAllMovies(app, `winner=${value}`);
-        assert.equal(winners.length, 42, `winner=${value}`);
-        assert.ok(winners.every((m) => m.winner));
-      }
-      for (const value of ['false', '0']) {
-        const others = await fetchAllMovies(app, `winner=${value}`);
-        assert.equal(others.length, 164, `winner=${value}`);
-        assert.ok(others.every((m) => !m.winner));
-      }
+    it('filters winners with winner=true and winner=false', async () => {
+      const winners = await fetchAllMovies(app, 'winner=true');
+      assert.equal(winners.length, 42);
+      assert.ok(winners.every((m) => m.winner));
+      const others = await fetchAllMovies(app, 'winner=false');
+      assert.equal(others.length, 164);
+      assert.ok(others.every((m) => !m.winner));
     });
 
     it('filters by year', async () => {
@@ -207,6 +203,7 @@ describe('GET /movies and GET /movies/:id (official CSV)', () => {
       ['year=abc', 'year'],
       ['year=1990.5', 'year'],
       ['winner=maybe', 'winner'],
+      ['winner=1', 'winner'], // only true/false are accepted
       ['cursor=not-a-cursor!!', 'cursor'],
       ['cursor=aGVsbG8', 'cursor'], // base64url of "hello": decodes, but is not a cursor
       [`cursor=${Buffer.from('{"id":-1}').toString('base64url')}`, 'cursor'],

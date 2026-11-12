@@ -17,8 +17,7 @@ export const listMoviesSchema = {
   querystring: {
     type: 'object',
     properties: {
-      // A string enum, not `type: boolean`: Ajv's boolean coercion would reject "1" and "0".
-      winner: { type: 'string', enum: ['true', 'false', '1', '0'] },
+      winner: { type: 'boolean' },
       year: { type: 'integer' },
       limit: { type: 'integer', minimum: 1, maximum: MAX_LIMIT, default: DEFAULT_LIMIT },
       cursor: { type: 'string', minLength: 1, maxLength: 100 },
