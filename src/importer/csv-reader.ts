@@ -34,9 +34,11 @@ function toError(err: unknown, csvPath: string): Error {
 /**
  * Streams the CSV (semicolon-delimited, RFC 4180 quoting) as normalized rows. Header names are
  * matched ignoring case and surrounding spaces, extra columns are ignored, and blank lines are
- * skipped. A missing required column rejects the iteration with a CsvImportError.
+ * skipped. A missing required column, or a file with no header at all (empty or only blank
+ * lines), rejects the iteration with a CsvImportError.
  */
 export async function* readCsv(csvPath: string): AsyncGenerator<CsvRow> {
+  let headerSeen = false;
   const parser = parse({
     delimiter: ';',
     bom: true,
@@ -45,6 +47,7 @@ export async function* readCsv(csvPath: string): AsyncGenerator<CsvRow> {
     relax_column_count: true,
     info: true,
     columns: (header: string[]) => {
+      headerSeen = true;
       const columns = header.map((name) => name.trim().toLowerCase());
       const missing = REQUIRED_COLUMNS.filter((name) => !columns.includes(name));
       if (missing.length > 0) {
@@ -70,6 +73,13 @@ export async function* readCsv(csvPath: string): AsyncGenerator<CsvRow> {
         producers: r.producers ?? '',
         winner: r.winner ?? '',
       };
+    }
+    // The parser never calls `columns` when there is no record at all, so an empty file would
+    // otherwise look like a valid CSV without rows.
+    if (!headerSeen) {
+      throw new CsvImportError(
+        `CSV file has no header (expected: ${REQUIRED_COLUMNS.join(';')}): ${csvPath}`,
+      );
     }
   } catch (err) {
     throw toError(err, csvPath);

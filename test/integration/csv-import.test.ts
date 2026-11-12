@@ -143,6 +143,14 @@ describe('CSV import: unusual files', () => {
     assert.match(warnings[0]!.msg, /no data rows/);
   });
 
+  it('buildApp rejects a file without a header (0 bytes or only blank lines)', async () => {
+    await assert.rejects(buildApp({ csvPath: fixture('empty.csv') }), /CSV file has no header/);
+    await assert.rejects(
+      buildApp({ csvPath: fixture('blank-lines.csv') }),
+      /CSV file has no header/,
+    );
+  });
+
   it('buildApp rejects when a required column is missing', async () => {
     await assert.rejects(
       buildApp({ csvPath: fixture('missing-column.csv') }),

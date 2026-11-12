@@ -303,8 +303,8 @@ as award intervals may be affected`.
     dados que foram importados. Acompanhe os logs ao trocar o CSV.
 - **CSV só com cabeçalho:** a aplicação sobe normalmente, com um `warn`, e a API responde com
   resultados vazios (`{ "min": [], "max": [] }` e `data: []`).
-- **O que impede a aplicação de subir:** arquivo inexistente, coluna obrigatória faltando ou CSV
-  malformado (por exemplo, aspas abertas e nunca fechadas). Nesses casos tudo é revertido e o
+- **O que impede a aplicação de subir:** arquivo inexistente, arquivo sem cabeçalho (0 bytes ou só
+  linhas em branco), coluna obrigatória faltando ou CSV malformado (por exemplo, aspas abertas e nunca fechadas). Nesses casos tudo é revertido e o
   processo encerra com código 1. O CSV malformado não é tratado como "linha ruim" porque uma aspa
   mal fechada pode engolir as linhas seguintes, e seguir adiante comprometeria a precisão do
   resultado.

@@ -140,6 +140,23 @@ Cada decisão relevante, com as alternativas consideradas e o motivo.
 - **Alternativas:** falhar o startup com CSV vazio.
 - **Motivo:** um CSV sem filmes é uma entrada válida; o contrato de `min`/`max` já prevê arrays
   vazios.
+- **Ajuste (D33):** isto vale só para arquivo _com cabeçalho_. Arquivo sem cabeçalho (0 bytes ou só
+  linhas em branco) passou a falhar o startup.
+
+## D33 — CSV sem cabeçalho (0 bytes) falha o startup
+
+- **Achado:** um CSV de 0 bytes subia com o aviso "CSV has a header but no data rows", que é falso:
+  o `csv-parse` só chama o callback de `columns` quando há ao menos um registro, então a validação
+  das colunas obrigatórias nunca rodava e o arquivo parecia um CSV válido sem linhas.
+- **Escolha:** `readCsv` marca quando o cabeçalho foi lido e, se o arquivo terminar sem ele, lança
+  `CsvImportError` ("CSV file has no header (expected: ...)"). Cobre arquivo vazio e arquivo só com
+  linhas em branco. É o mesmo tratamento de "coluna obrigatória faltando" (D18 só vale com
+  cabeçalho).
+- **Alternativas:** manter o startup com `warn` e corrigir só o texto da mensagem. Descartado: sem
+  cabeçalho não dá para saber se o arquivo é o CSV certo (upload truncado, arquivo errado), e subir
+  a API com resultados vazios esconderia o erro, que é o que mais afeta a precisão dos intervalos.
+- **Testes:** `buildApp` rejeita `empty.csv` (0 bytes) e `blank-lines.csv`. Sem a correção, falha.
+  Total: 69 testes.
 
 ## D19 — Intervalos calculados em SQL com `LAG`, uma vez após a carga
 

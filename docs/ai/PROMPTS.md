@@ -378,3 +378,18 @@ a decisão e fazer o commit (Conventional Commits, com o trailer `Co-Authored-By
 - README: seção de erros (com exemplo), tabela de decisões e estrutura de `shared/`.
 - O `CLAUDE.md` manda não fazer commit; desta vez o autor pediu o commit explicitamente, então ele
   foi feito localmente, sem push.
+
+## 2026-11-11 — CSV de 0 bytes sobe com mensagem enganosa
+
+Instrução: o autor testou um CSV de 0 bytes: a aplicação sobe e o log diz "has a header" sem haver
+cabeçalho. Pedido: corrigir esse caso.
+
+**O que foi feito:**
+
+- `csv-reader.ts`: se o arquivo termina sem ter lido o cabeçalho (0 bytes ou só linhas em branco),
+  `readCsv` lança `CsvImportError` ("CSV file has no header"), e o startup falha como nos demais
+  erros estruturais. A causa: o `csv-parse` não chama o callback `columns` sem registros. Decisão e
+  alternativa (só trocar a mensagem do `warn`) na D33; ajuste na D18.
+- Teste de integração em `csv-import.test.ts` com as fixtures `empty.csv` e `blank-lines.csv`.
+  Sem a correção, falha. 69 testes passando; typecheck, lint e prettier limpos.
+- README atualizado (lista do que impede a aplicação de subir). Sem commits.
