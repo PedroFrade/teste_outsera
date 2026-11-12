@@ -288,3 +288,24 @@ o startup, e o `.gitattributes` fica. Autorizou a fase 3.
 - Fase 3: `modules/producers/` (`repository.ts` com a query `LAG`, `service.ts` que calcula uma vez
   após a carga, `schemas.ts`, `routes.ts`) e `GET /producers/award-intervals`. 8 fixtures novas e
   `award-intervals.test.ts` (12 testes). Total: 29 testes passando. Sem commits.
+
+## 2026-11-11 — Aprovação da fase 3 e início da fase 4
+
+Instrução: fase 3 aprovada e endpoint testado à mão; manter o `DISTINCT`. Seguir para a fase 4 e
+reescrever os testes de importação para passarem pela API.
+
+**O que foi feito (fase 4):**
+
+- `modules/movies/` (`repository.ts`, `service.ts`, `schemas.ts`, `routes.ts`) e
+  `shared/pagination.ts`: `GET /movies` (filtros `winner` com `true/false/1/0` e `year`,
+  paginação por cursor keyset em base64url, `limit` padrão 50 e máximo 500) e `GET /movies/:id`
+  (200, 404, 400).
+- `test/integration/movies.test.ts` (paginação sem repetir nem perder registros para vários
+  `limit`, filtros, 404, 400 em Problem Details para `limit=0`, `limit=10000`, `year=abc` e
+  cursores inválidos, 405 com `Allow`, `x-request-id`).
+- `csv-import.test.ts` reescrito: passa por `buildApp` + `GET /movies` e captura os logs de
+  startup; nenhum teste chama `importCsv` ou acessa o banco. Pendência da fase 2 resolvida.
+- Dois defeitos achados pelos testes e corrigidos no código: o Ajv parava no primeiro campo
+  inválido (agora `allErrors: true`, listando todos em `errors`) e `INVALID_OPENING_QUOTE` do
+  csv-parse não era reconhecido como CSV malformado (agora `instanceof CsvError`).
+- Total: 60 testes passando. Sem commits.

@@ -5,6 +5,9 @@ import { openDatabase } from './db/connection.js';
 import { applySchema } from './db/apply-schema.js';
 import { importCsv } from './importer/import-csv.js';
 import { healthRoutes } from './modules/health/routes.js';
+import { createMoviesRepository } from './modules/movies/repository.js';
+import { moviesRoutes } from './modules/movies/routes.js';
+import { createMoviesService, type MoviesService } from './modules/movies/service.js';
 import { createProducersRepository } from './modules/producers/repository.js';
 import { producersRoutes } from './modules/producers/routes.js';
 import { createProducersService, type ProducersService } from './modules/producers/service.js';
@@ -29,6 +32,8 @@ export async function buildApp({
     logger,
     requestIdHeader: 'x-request-id',
     genReqId: () => randomUUID(),
+    // Report every invalid field in the 400 response, not just the first one found.
+    ajv: { customOptions: { allErrors: true } },
   });
 
   const db = openDatabase();
@@ -39,9 +44,11 @@ export async function buildApp({
   });
 
   let producers: ProducersService;
+  let movies: MoviesService;
   try {
     await importCsv(db, csvPath, app.log);
     producers = createProducersService(createProducersRepository(db));
+    movies = createMoviesService(createMoviesRepository(db));
   } catch (err) {
     app.log.fatal({ err }, 'Startup aborted: loading the CSV data failed');
     await app.close();
@@ -58,6 +65,7 @@ export async function buildApp({
   await app.register(helmet);
   app.register(healthRoutes);
   app.register(producersRoutes, { service: producers });
+  app.register(moviesRoutes, { service: movies });
 
   return app;
 }

@@ -1,6 +1,6 @@
 import { createReadStream } from 'node:fs';
 import { pipeline } from 'node:stream';
-import { parse } from 'csv-parse';
+import { CsvError, parse } from 'csv-parse';
 
 export const REQUIRED_COLUMNS = ['year', 'title', 'studios', 'producers', 'winner'] as const;
 
@@ -23,11 +23,11 @@ export class CsvImportError extends Error {
 
 function toError(err: unknown, csvPath: string): Error {
   if (err instanceof CsvImportError) return err;
-  const e = err as NodeJS.ErrnoException & { lines?: number };
-  if (e.code === 'ENOENT') return new CsvImportError(`CSV file not found: ${csvPath}`);
-  if (typeof e.code === 'string' && e.code.startsWith('CSV_')) {
-    return new CsvImportError(`Malformed CSV near line ${e.lines ?? '?'}: ${e.message}`);
+  if (err instanceof CsvError) {
+    return new CsvImportError(`Malformed CSV near line ${err.lines}: ${err.message}`);
   }
+  const e = err as NodeJS.ErrnoException;
+  if (e.code === 'ENOENT') return new CsvImportError(`CSV file not found: ${csvPath}`);
   return e;
 }
 

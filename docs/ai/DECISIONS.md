@@ -123,9 +123,8 @@ Cada decisão relevante, com as alternativas consideradas e o motivo.
 - **Motivo:** continua sendo teste de integração (arquivo real, SQLite real, sem mocks) e dá
   cobertura da importação já na fase 2. Só o logger é um stub, para capturar os avisos.
 
-> **Pendência (D17):** por decisão do autor, na fase 4 os testes de `csv-import.test.ts` serão
-> reescritos para passar pela API (`buildApp` + `GET /movies`), e as chamadas diretas a
-> `importCsv` serão removidas. A D17 vale só até lá.
+> **Resolvida na fase 4:** os testes de importação foram reescritos para passar pela API
+> (`buildApp` + `GET /movies`) e nenhum teste chama mais `importCsv` nem acessa o banco.
 
 ## D18 — CSV só com cabeçalho sobe normalmente
 
@@ -162,3 +161,54 @@ ORDER BY year)`) → `intervals`; duas prepared statements (`MIN` e `MAX`) filtr
   teste (ex.: Eve 1980, 1982, 1990, 2000 → gaps 2, 8, 10; 1980→2000 não é par).
 - **Motivo:** o avaliador usará outros CSVs; cada cenário isola uma regra (empates, pares
   consecutivos, mesmo produtor em `min` e `max`, vazio, intervalo 0, formatação, linha inválida).
+
+## D22 — Paginação por cursor keyset no `id`, sem `COUNT`
+
+- **Escolha:** `WHERE id > ? ORDER BY id LIMIT limit+1`; a linha extra indica `hasMore`. O cursor é
+  `base64url({"id": N})`, validado por decodificação e recodificação idêntica; qualquer outra coisa
+  (lixo, JSON diferente, chaves extras, id negativo ou não inteiro) é 400.
+- **Alternativas:** `OFFSET`/`LIMIT` (custo cresce com a página e repete/perde registros se algo
+  mudar); devolver o total com `COUNT(*)`.
+- **Motivo:** o keyset tem custo constante por página e é estável. O total não foi pedido.
+
+## D23 — Uma só prepared statement para todas as combinações de filtro
+
+- **Escolha:** `(@winner IS NULL OR m.winner = @winner) AND (@year IS NULL OR m.year = @year)`,
+  com `NULL` para o filtro ausente.
+- **Alternativas:** montar o SQL dinamicamente por combinação; uma statement por combinação.
+- **Motivo:** mantém "prepared statements criados uma única vez" sem SQL dinâmico. O custo é que
+  um filtro raro percorre as linhas a partir do cursor; para os volumes deste teste é irrelevante.
+
+## D24 — Produtores e estúdios no mesmo SELECT, na ordem do CSV
+
+- **Escolha:** subqueries com `json_group_array(nome ORDER BY mp.rowid)`; uma query por página,
+  sem N+1. As tabelas de ligação têm `rowid` implícito, e as linhas são inseridas na ordem em que
+  os nomes aparecem no arquivo.
+- **Alternativas:** ordem alfabética; segunda query com `IN (...)` dinâmico; coluna `position`.
+- **Motivo:** devolver "Steven Perry and Joel Silver" como `["Steven Perry", "Joel Silver"]` é o
+  mais fiel ao CSV e não exige coluna nova. Depende de `ORDER BY` dentro de agregado (SQLite
+  ≥ 3.44; o better-sqlite3 instalado traz 3.54).
+
+## D25 — `winner` como enum de string, não `type: boolean`
+
+- **Escolha:** `{ type: 'string', enum: ['true','false','1','0'] }`, convertido na rota.
+- **Alternativas:** `type: 'boolean'` do Ajv.
+- **Motivo:** a coerção booleana do Ajv aceita `"true"`/`"false"` mas rejeita `"1"`/`"0"` em query
+  string, e o autor pediu os dois formatos.
+
+## D26 — Ajv com `allErrors: true`
+
+- **Escolha:** `ajv: { customOptions: { allErrors: true } }` no Fastify.
+- **Alternativas:** deixar o padrão (para no primeiro erro).
+- **Motivo:** o prompt manda listar os campos inválidos em `errors`; com o padrão só o primeiro
+  aparecia (achado pelo teste `lists every invalid field`). As entradas são pequenas (4 params),
+  então o custo é desprezível.
+
+## D27 — CSV malformado reconhecido por `instanceof CsvError`
+
+- **Escolha:** qualquer `CsvError` do csv-parse vira `CsvImportError` ("Malformed CSV near line N").
+- **Alternativas:** checar o prefixo `CSV_` do `code`.
+- **Motivo:** os códigos do csv-parse não são uniformes (`INVALID_OPENING_QUOTE` não tem o prefixo),
+  então o teste de CSV malformado pegou uma aspa solta que passaria como erro genérico. Observação:
+  para aspa aberta e nunca fechada o parser informa a linha onde desistiu (fim do arquivo), não
+  a linha onde a aspa abriu.
